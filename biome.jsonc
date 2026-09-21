@@ -1,0 +1,54 @@
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "organizeImports": { "enabled": true },
+  "files": {
+    "ignore": ["**/dist/**", "**/node_modules/**", "**/public/**", "**/.wrangler/**"]
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "semicolons": "always"
+    }
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noConsoleLog": "error"
+      },
+      "style": {
+        "noNonNullAssertion": "off"
+      },
+      "security": {
+        // Model output is rendered through src/markdown.ts, which HTML-escapes
+        // ALL input before applying markdown transforms — raw HTML can never
+        // reach the DOM, so this pattern is safe by construction here.
+        "noDangerouslySetInnerHtml": "off"
+      }
+    }
+  },
+  "overrides": [
+    {
+      "include": [
+        "apps/worker/src/node-dev.ts",
+        "apps/worker/scripts/**",
+        "apps/worker/test/e2e/**",
+        "apps/worker/test/mock-llm-server.mjs"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsoleLog": "off"
+          }
+        }
+      }
+    }
+  ]
+}

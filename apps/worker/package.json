@@ -1,0 +1,28 @@
+{
+  "name": "@consenso/worker",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/gen-dev-vars.mjs && tsx src/node-dev.ts",
+    "dev:seed": "node scripts/gen-dev-vars.mjs && SEED_DEMO=1 tsx src/node-dev.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "e2e": "node test/e2e/run.mjs",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@consenso/shared": "2.0.0",
+    "hono": "^4.6.16",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.25.0"
+  }
+}

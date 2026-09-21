@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+apps/worker/public/
+coverage/
+
+# Cloudflare / wrangler
+.wrangler/
+.dev/
+.dev-vars
+.dev-vars.json
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Env & secrets (never commit)
+.env
+.env.*
+!.env.example
+keys.encrypted
+
+# OS / editor
+.DS_Store
+*.log

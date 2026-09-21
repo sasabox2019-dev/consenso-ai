@@ -1,0 +1,125 @@
+/**
+ * Cryptography helpers — Web standard only (works on Workers and Node ≥18).
+ *
+ * - Provider API keys: AES-256-GCM, random 96-bit IV, key derived from MASTER_KEY.
+ *   Stored as "base64(iv).base64(ciphertext+tag)".
+ * - Admin password: keyed HMAC-SHA256 ("peppered" hash). A slow KDF (PBKDF2 with
+ *   600k iterations) would exceed the Workers free tier 10 ms CPU cap, so we use
+ *   a keyed hash instead: the pepper is a server-side secret, so a database leak
+ *   alone is not enough to mount an offline brute force. Compensated by strict
+ *   login rate limiting and a long generated password at bootstrap.
+ */
+
+const encoder = new TextEncoder();
+
+export function toBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+export function fromBase64(b64: string): Uint8Array {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+export function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function randomHex(byteLength = 32): string {
+  const bytes = new Uint8Array(byteLength);
+  crypto.getRandomValues(bytes);
+  return toHex(bytes);
+}
+
+const PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+export function generatePassword(length = 20): string {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => PASSWORD_ALPHABET[b % PASSWORD_ALPHABET.length]).join("");
+}
+
+type SubtleKey = Awaited<ReturnType<typeof crypto.subtle.importKey>>;
+
+async function hmacKey(secret: string): Promise<SubtleKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    encoder.encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+}
+
+export async function hmacHex(secret: string, message: string): Promise<string> {
+  const key = await hmacKey(secret);
+  const sig = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
+  return toHex(new Uint8Array(sig));
+}
+
+/** Constant-time string comparison (both hex strings of equal expectation). */
+export function constantTimeEqual(a: string, b: string): boolean {
+  const maxLen = Math.max(a.length, b.length);
+  let diff = a.length === b.length ? 0 : 1;
+  for (let i = 0; i < maxLen; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+// ---------------------------------------------------------------------------
+// AES-GCM string encryption (provider API keys at rest)
+// ---------------------------------------------------------------------------
+
+async function aesKeyFromMaster(masterKey: string): Promise<SubtleKey> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(masterKey));
+  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
+}
+
+export async function encryptString(masterKey: string, plaintext: string): Promise<string> {
+  const key = await aesKeyFromMaster(masterKey);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(plaintext));
+  return `${toBase64(iv)}.${toBase64(new Uint8Array(ct))}`;
+}
+
+export async function decryptString(masterKey: string, payload: string): Promise<string> {
+  const [ivB64, ctB64] = payload.split(".");
+  if (!ivB64 || !ctB64) throw new Error("malformed ciphertext payload");
+  const key = await aesKeyFromMaster(masterKey);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromBase64(ivB64) },
+    key,
+    fromBase64(ctB64),
+  );
+  return new TextDecoder().decode(plain);
+}
+
+// ---------------------------------------------------------------------------
+// Admin password hashing
+// ---------------------------------------------------------------------------
+
+export async function hashPassword(
+  jwtSecret: string,
+  username: string,
+  password: string,
+): Promise<string> {
+  const pepper = await hmacHex(jwtSecret, "consenso-password-pepper:v1");
+  return hmacHex(pepper, `admin:${username}:${password}`);
+}
+
+export async function verifyPassword(
+  jwtSecret: string,
+  username: string,
+  password: string,
+  storedHash: string,
+): Promise<boolean> {
+  const candidate = await hashPassword(jwtSecret, username, password);
+  return constantTimeEqual(candidate, storedHash);
+}
