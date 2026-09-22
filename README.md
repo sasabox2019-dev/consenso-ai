@@ -56,7 +56,7 @@ To use real providers: start the app (`npm run dev`), open `#/admin`, create the
 
 ## Deploy (free tier)
 
-See [DEPLOY.md](DEPLOY.md) — roughly: `wrangler login` → create D1 → apply migrations → set 2 secrets → `npm run deploy`. Everything (API + UI) ships as one Worker with static assets.
+Two destinations, same code: **Cloudflare's free tier** — [DEPLOY.md](DEPLOY.md) (`wrangler login` → create D1 → 2 secrets → `npm run deploy`) — or **your own computer/server/Docker** — [SELF-HOST.md](SELF-HOST.md) (Node or `docker compose up`, SQLite embedded, systemd/Caddy guide included).
 
 ## Free-tier fit
 

@@ -2,6 +2,8 @@
 
 One Worker ships the API and the UI together. Everything below is free.
 
+> Prefer your own server or Docker? See [SELF-HOST.md](SELF-HOST.md) (Spanish) — the same code runs on any Node host.
+
 ## 0. Prerequisites
 
 - A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free)

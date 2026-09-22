@@ -88,7 +88,7 @@ adminRoutes.get("/api/admin/bootstrap", async (c) => {
 });
 
 adminRoutes.post("/api/admin/bootstrap", async (c) => {
-  const ip = clientIp(c.req.raw);
+  const ip = clientIp(c.req.raw, c.env);
   const verdict = await rateLimit(
     c.env.DB,
     `bootstrap:${ip}`,
@@ -144,7 +144,7 @@ adminRoutes.post("/api/admin/login", async (c) => {
   if (!jwtSecret) {
     return jsonError(c, 503, "not_configured", "Sistema sin configurar (falta JWT_SECRET).");
   }
-  const ip = clientIp(c.req.raw);
+  const ip = clientIp(c.req.raw, c.env);
   const ipVerdict = await rateLimit(
     c.env.DB,
     `login:ip:${ip}`,
@@ -232,7 +232,7 @@ adminRoutes.get("/api/admin/session", async (c) => {
   // JWT_SECRET, and each call costs a D1 read.
   const verdict = await rateLimit(
     c.env.DB,
-    `session:${clientIp(c.req.raw)}`,
+    `session:${clientIp(c.req.raw, c.env)}`,
     LIMITS.SESSION_MAX,
     LIMITS.SESSION_WINDOW_S,
   );

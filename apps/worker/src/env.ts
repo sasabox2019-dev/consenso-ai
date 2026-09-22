@@ -33,13 +33,28 @@ export interface Env {
   JWT_SECRET?: string;
   /** When set, admin bootstrap additionally requires this token. */
   BOOTSTRAP_TOKEN?: string;
+  /**
+   * Self-hosting behind your OWN reverse proxy (nginx/Caddy): set to "1" so
+   * rate limiting trusts the real client IP from X-Real-IP / X-Forwarded-For.
+   * NEVER enable when clients can reach the app directly — those headers are
+   * then client-controlled and would let anyone rotate their limit bucket.
+   */
+  TRUST_PROXY_IP?: string;
   /** Test/dev injection point for the upstream LLM transport. */
   LLM_FETCHER?: typeof fetch;
 }
 
-export function clientIp(req: Request): string {
-  // Only Cloudflare's injected header is trustworthy; X-Forwarded-For is
-  // client-controlled and would let anyone rotate their rate-limit bucket.
-  // Without it (local dev, non-CF deployments) every client shares one bucket.
-  return req.headers.get("cf-connecting-ip") ?? "unknown";
+export function clientIp(req: Request, env?: { TRUST_PROXY_IP?: string }): string {
+  // Cloudflare's injected header is always authoritative on their network.
+  const cf = req.headers.get("cf-connecting-ip");
+  if (cf) return cf;
+  // Self-hosted behind your own proxy: opt-in trust for the proxy-set headers.
+  if (env?.TRUST_PROXY_IP) {
+    const real = req.headers.get("x-real-ip");
+    if (real) return real.trim();
+    const xff = req.headers.get("x-forwarded-for");
+    if (xff) return xff.split(",")[0]?.trim() || "unknown";
+  }
+  // Without a trusted source every client shares one bucket (fail-closed).
+  return "unknown";
 }

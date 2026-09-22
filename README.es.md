@@ -56,7 +56,7 @@ Para usar proveedores reales: arranca la app, entra en `#/admin`, crea la cuenta
 
 ## Despliegue (tier gratuito)
 
-Ver [DEPLOY.md](DEPLOY.md) — en resumen: `wrangler login` → crear D1 → aplicar migraciones → 2 secretos → `npm run deploy`. Todo (API + UI) se publica como un único Worker con assets estáticos.
+Dos destinos, mismo código: **Cloudflare gratis** — [DEPLOY.md](DEPLOY.md) — o **tu propio ordenador/servidor/Docker** — [SELF-HOST.md](SELF-HOST.md) (Node o `docker compose up`, SQLite incluido, guía de systemd y Caddy).
 
 ## Encaje en el tier gratuito
 

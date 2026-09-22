@@ -1,0 +1,27 @@
+# Consenso AI v2 — one-command self-hosting.
+# Usage:
+#   1. Generate secrets once and put them in a .env file next to this file:
+#        echo "MASTER_KEY=$(openssl rand -hex 32)"  >> .env
+#        echo "JWT_SECRET=$(openssl rand -hex 32)"  >> .env
+#   2. docker compose up -d --build
+#   3. Open http://localhost:8787/#/admin and create the admin account.
+# Behind Caddy/nginx with TLS? Add TRUST_PROXY_IP=1 to .env.
+services:
+  consenso-ai:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # Required — 32+ chars each (docker compose reads them from .env):
+      MASTER_KEY: ${MASTER_KEY:?genera uno con: openssl rand -hex 32}
+      JWT_SECRET: ${JWT_SECRET:?genera uno con: openssl rand -hex 32}
+      # Optional — require this token to create the admin account:
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:-}
+      # Optional — set to 1 ONLY behind your own reverse proxy:
+      TRUST_PROXY_IP: ${TRUST_PROXY_IP:-}
+    volumes:
+      - consenso-data:/app/data
+
+volumes:
+  consenso-data:

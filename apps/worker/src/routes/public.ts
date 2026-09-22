@@ -34,7 +34,7 @@ publicRoutes.get("/api/agents", async (c) => {
 publicRoutes.post("/api/consensus", async (c) => {
   // Cheap guard first: the rate limiter runs before any body parsing so a
   // flood pays nothing but a D1 counter.
-  const ip = clientIp(c.req.raw);
+  const ip = clientIp(c.req.raw, c.env);
   const verdict = await rateLimit(
     c.env.DB,
     `consensus:${ip}`,
@@ -199,7 +199,7 @@ function sseHeaders(): Record<string, string> {
 // ---------------------------------------------------------------------------
 
 publicRoutes.post("/api/individual", async (c) => {
-  const ip = clientIp(c.req.raw);
+  const ip = clientIp(c.req.raw, c.env);
   const verdict = await rateLimit(
     c.env.DB,
     `individual:${ip}`,

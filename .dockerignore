@@ -1,0 +1,17 @@
+node_modules
+**/node_modules
+dist
+**/dist
+apps/worker/public
+apps/worker/.dev
+apps/worker/.dev-vars.json
+apps/worker/*.sqlite
+apps/worker/*.sqlite-*
+.wrangler
+.github
+*.md
+!README.md
+.env
+.env.*
+.git
+.DS_Store
