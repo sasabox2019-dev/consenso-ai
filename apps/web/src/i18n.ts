@@ -8,6 +8,7 @@ import {
   createElement,
   useContext,
   useEffect,
+  useMemo,
   useState,
 } from "react";
 
@@ -27,13 +28,11 @@ const dict = {
     start_consensus: "Iniciar consenso",
     running: "Procesando…",
     stop: "Detener",
-    stage_start: "Validando",
+    stopped_msg: "Proceso detenido. Puedes iniciar un nuevo consenso cuando quieras.",
+    no_moderator: "No hay moderadora configurada — un administrador debe añadirla.",
     stage_round1: "Ronda 1 · respuestas independientes",
     stage_round2: "Ronda 2 · revisión cruzada",
     stage_moderation: "Síntesis de la moderadora",
-    stage_cache: "Respondido desde caché",
-    agent_ok: "listo",
-    agent_fail: "fallo",
     result_title: "Respuesta consensuada",
     process_title: "Ver proceso",
     process_hide: "Ocultar proceso",
@@ -48,7 +47,6 @@ const dict = {
     from_cache: "desde caché",
     question_label: "Pregunta",
     error_title: "Error",
-    individual_title: "Consulta individual",
     individual_pick: "Elige una IA",
     individual_start: "Consultar",
     key_points: "Puntos clave",
@@ -111,13 +109,11 @@ const dict = {
     start_consensus: "Start consensus",
     running: "Processing…",
     stop: "Stop",
-    stage_start: "Validating",
+    stopped_msg: "Stopped. You can start a new consensus whenever you like.",
+    no_moderator: "No moderator configured — an administrator must add one.",
     stage_round1: "Round 1 · independent answers",
     stage_round2: "Round 2 · cross review",
     stage_moderation: "Moderator synthesis",
-    stage_cache: "Answered from cache",
-    agent_ok: "done",
-    agent_fail: "failed",
     result_title: "Consensus answer",
     process_title: "View process",
     process_hide: "Hide process",
@@ -132,7 +128,6 @@ const dict = {
     from_cache: "from cache",
     question_label: "Question",
     error_title: "Error",
-    individual_title: "Individual query",
     individual_pick: "Choose an AI",
     individual_start: "Ask",
     key_points: "Key points",
@@ -214,8 +209,16 @@ export function LangProvider({ children }: { children: ReactNode }) {
     document.documentElement.lang = lang;
   }, [lang]);
 
-  const t = (k: DictKey) => dict[lang][k] ?? dict.es[k];
-  return createElement(LangCtx.Provider, { value: { lang, setLang, t } }, children);
+  // Stable context value: consumers don't re-render on unrelated parent renders.
+  const value = useMemo(
+    () => ({
+      lang,
+      setLang,
+      t: (k: DictKey) => dict[lang][k] ?? dict.es[k],
+    }),
+    [lang, setLang],
+  );
+  return createElement(LangCtx.Provider, { value }, children);
 }
 
 export function useI18n() {

@@ -34,6 +34,8 @@ export interface LLMCallArgs {
   retries?: number;
   /** Test hook: overrides backoff delays (ms) between retries. */
   retryDelaysMs?: number[];
+  /** External abort (e.g. client disconnected) — combined with the per-call timeout. */
+  signal?: AbortSignal;
   fetcher?: typeof fetch;
 }
 
@@ -115,12 +117,14 @@ export async function callChatCompletion(args: LLMCallArgs): Promise<LLMCallResu
   let lastError: LLMError | null = null;
 
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const timeoutSignal = AbortSignal.timeout(args.timeoutS * 1000);
+    const signal = args.signal ? AbortSignal.any([timeoutSignal, args.signal]) : timeoutSignal;
     try {
       const res = await doFetch(args.url, {
         method: "POST",
         headers,
         body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(args.timeoutS * 1000),
+        signal,
       });
 
       if (res.ok) {
@@ -177,7 +181,10 @@ export async function callChatCompletion(args: LLMCallArgs): Promise<LLMCallResu
             message: "Error de conexión con la API",
             detail: String(e).slice(0, 300),
           };
-      if (!isAbort && attempt < retries) {
+      // A timeout already consumed the full budget and a client abort means
+      // nobody is listening — never burn another attempt on either.
+      if (isAbort) break;
+      if (attempt < retries) {
         await sleep(args.retryDelaysMs?.[attempt] ?? 1000 * 2 ** attempt);
         continue;
       }

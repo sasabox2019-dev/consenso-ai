@@ -43,7 +43,13 @@ interface TableRows {
 }
 
 export function renderMarkdown(src: string): string {
-  const lines = (src ?? "").replace(/\r\n/g, "\n").split("\n");
+  // Strip NULs: model output containing literal \u0000 would otherwise
+  // collide with the inline-code sentinel below.
+  const lines = (src ?? "")
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping literal NULs that would collide with the inline-code sentinel below
+    .replace(/\u0000/g, "")
+    .replace(/\r\n/g, "\n")
+    .split("\n");
   const html: string[] = [];
   let list: "ul" | "ol" | null = null;
   let inCode = false;

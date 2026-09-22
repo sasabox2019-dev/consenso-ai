@@ -39,9 +39,8 @@ export interface Env {
 }
 
 export function clientIp(req: Request): string {
-  const cf = req.headers.get("cf-connecting-ip");
-  if (cf) return cf;
-  const xff = req.headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]?.trim() || "unknown";
-  return "unknown";
+  // Only Cloudflare's injected header is trustworthy; X-Forwarded-For is
+  // client-controlled and would let anyone rotate their rate-limit bucket.
+  // Without it (local dev, non-CF deployments) every client shares one bucket.
+  return req.headers.get("cf-connecting-ip") ?? "unknown";
 }

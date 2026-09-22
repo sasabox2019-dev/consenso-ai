@@ -78,6 +78,13 @@ export function constantTimeEqual(a: string, b: string): boolean {
 // ---------------------------------------------------------------------------
 
 async function aesKeyFromMaster(masterKey: string): Promise<SubtleKey> {
+  // Reject weak master keys early: a short/passphrase-style MASTER_KEY would
+  // make the stored ciphertexts offline-brute-forceable after a DB leak.
+  if (masterKey.length < 32) {
+    throw new Error(
+      "MASTER_KEY too weak: use at least 32 characters (e.g. `openssl rand -hex 32`)",
+    );
+  }
   const digest = await crypto.subtle.digest("SHA-256", encoder.encode(masterKey));
   return crypto.subtle.importKey("raw", digest, "AES-GCM", false, ["encrypt", "decrypt"]);
 }
@@ -105,12 +112,35 @@ export async function decryptString(masterKey: string, payload: string): Promise
 // Admin password hashing
 // ---------------------------------------------------------------------------
 
+/**
+ * Pepper derived via HKDF from JWT_SECRET with a dedicated info label, so the
+ * pepper is independent from the session-signing use of the same secret.
+ * NOTE: changing the derivation (or JWT_SECRET) invalidates stored hashes —
+ * delete the admin row and bootstrap again.
+ */
+async function passwordPepper(jwtSecret: string): Promise<string> {
+  const baseKey = await crypto.subtle.importKey("raw", encoder.encode(jwtSecret), "HKDF", false, [
+    "deriveBits",
+  ]);
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: "HKDF",
+      hash: "SHA-256",
+      salt: encoder.encode("consenso-ai:v2"),
+      info: encoder.encode("password-pepper"),
+    },
+    baseKey,
+    256,
+  );
+  return toHex(new Uint8Array(bits));
+}
+
 export async function hashPassword(
   jwtSecret: string,
   username: string,
   password: string,
 ): Promise<string> {
-  const pepper = await hmacHex(jwtSecret, "consenso-password-pepper:v1");
+  const pepper = await passwordPepper(jwtSecret);
   return hmacHex(pepper, `admin:${username}:${password}`);
 }
 

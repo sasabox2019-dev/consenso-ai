@@ -15,21 +15,24 @@ export const agentKeySchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,31}$/, "lowercase letters, digits, - and _");
 
+/** Agent endpoint URLs must be https (plain http allowed only for loopback/dev mocks). */
+export const agentUrlSchema = z
+  .string()
+  .url()
+  .max(500)
+  .refine(
+    (u) =>
+      u.startsWith("https://") ||
+      u.startsWith("http://127.0.0.1") ||
+      u.startsWith("http://localhost"),
+    "must be an https URL (http only for 127.0.0.1/localhost)",
+  );
+
 export const agentCreateSchema = z.object({
   key: agentKeySchema,
   name: z.string().min(2).max(64),
   display_name: z.string().trim().min(1).max(64),
-  url: z
-    .string()
-    .url()
-    .max(500)
-    .refine(
-      (u) =>
-        u.startsWith("https://") ||
-        u.startsWith("http://127.0.0.1") ||
-        u.startsWith("http://localhost"),
-      "must be an http(s) URL",
-    ),
+  url: agentUrlSchema,
   model: z.string().trim().min(1).max(200),
   api_key: z.string().trim().min(8).max(500),
   timeout_s: z.number().int().min(5).max(120).default(45),
@@ -40,7 +43,7 @@ export type AgentCreateInput = z.infer<typeof agentCreateSchema>;
 export const agentUpdateSchema = z.object({
   name: z.string().min(2).max(64).optional(),
   display_name: z.string().trim().min(1).max(64).optional(),
-  url: z.string().url().max(500).optional(),
+  url: agentUrlSchema.optional(),
   model: z.string().trim().min(1).max(200).optional(),
   api_key: z.string().trim().min(8).max(500).optional(),
   timeout_s: z.number().int().min(5).max(120).optional(),
@@ -74,7 +77,10 @@ export const questionSchema = z.string().trim().min(10).max(1000);
 
 export const consensusRequestSchema = z.object({
   question: questionSchema,
-  selected_agents: z.array(agentKeySchema).length(3),
+  selected_agents: z
+    .array(agentKeySchema)
+    .length(3)
+    .refine((keys) => new Set(keys).size === keys.length, "agents must be unique"),
 });
 export type ConsensusRequest = z.infer<typeof consensusRequestSchema>;
 
@@ -194,10 +200,15 @@ export const bootstrapSchema = z.object({
 });
 
 export const testConnectionSchema = z.object({
-  url: z.string().url().max(500),
+  url: agentUrlSchema,
   model: z.string().trim().min(1).max(200),
   api_key: z.string().trim().min(8).max(500),
   timeout_s: z.number().int().min(5).max(60).default(15),
+});
+
+export const passwordChangeSchema = z.object({
+  current_password: z.string().min(1).max(200),
+  new_password: z.string().min(12).max(200),
 });
 
 export interface AuditEntry {

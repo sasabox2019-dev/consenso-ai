@@ -10,7 +10,7 @@ import {
 
 describe("crypto", () => {
   it("round-trips AES-GCM encryption", async () => {
-    const master = "test-master-key";
+    const master = "test-master-key-0123456789abcdef0123456789abcdef";
     const secret = "gsk_live_abc123-Ünïcode-ok";
     const ct = await encryptString(master, secret);
     expect(ct).not.toContain(secret);
@@ -18,17 +18,19 @@ describe("crypto", () => {
   });
 
   it("rejects decryption with the wrong master key", async () => {
-    const ct = await encryptString("key-one", "supersecret");
-    await expect(decryptString("key-two", ct)).rejects.toThrow();
+    const ct = await encryptString("key-one-0123456789abcdef0123456789abcdef", "supersecret");
+    await expect(decryptString("key-two-0123456789abcdef0123456789abcdef", ct)).rejects.toThrow();
   });
 
   it("rejects malformed ciphertext payloads", async () => {
-    await expect(decryptString("k", "no-dot-here")).rejects.toThrow("malformed");
+    await expect(
+      decryptString("k-0123456789abcdef0123456789abcdef", "no-dot-here"),
+    ).rejects.toThrow("malformed");
   });
 
   it("produces different ciphertexts per call (random IV)", async () => {
-    const a = await encryptString("m", "same-value");
-    const b = await encryptString("m", "same-value");
+    const a = await encryptString("m-0123456789abcdef0123456789abcdef", "same-value");
+    const b = await encryptString("m-0123456789abcdef0123456789abcdef", "same-value");
     expect(a).not.toBe(b);
   });
 
@@ -61,5 +63,17 @@ describe("crypto", () => {
       const p = generatePassword(20);
       expect(p).toMatch(/^[A-Za-z0-9]{20}$/);
     }
+  });
+});
+
+describe("regression: master key strength", () => {
+  it("rejects MASTER_KEY shorter than 32 characters", async () => {
+    await expect(encryptString("short-key", "secret")).rejects.toThrow(/too weak/i);
+  });
+
+  it("accepts a 32+ character master key", async () => {
+    const mk = "a".repeat(32);
+    const ct = await encryptString(mk, "secret");
+    expect(await decryptString(mk, ct)).toBe("secret");
   });
 });

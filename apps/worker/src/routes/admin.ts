@@ -4,6 +4,7 @@ import {
   agentUpdateSchema,
   bootstrapSchema,
   loginSchema,
+  passwordChangeSchema,
   testConnectionSchema,
 } from "@consenso/shared";
 import type { AgentRole } from "@consenso/shared";
@@ -22,6 +23,7 @@ import {
   verifySession,
 } from "../core/auth";
 import {
+  constantTimeEqual,
   decryptString,
   encryptString,
   generatePassword,
@@ -42,6 +44,7 @@ import {
   rateLimit,
   recentAudit,
   setAdmin,
+  updateAdminPassword,
   updateAgentFields,
 } from "../core/db";
 import { jsonError, toPublicAgent } from "../core/helpers";
@@ -51,6 +54,8 @@ import type { Env } from "../env";
 import { clientIp } from "../env";
 
 export const adminRoutes = new Hono<{ Bindings: Env; Variables: { adminUser: string } }>();
+
+const isSecure = (c: { req: { url: string } }) => new URL(c.req.url).protocol === "https:";
 
 /** Session guard — every /api/admin/* route requires auth except the public trio. */
 adminRoutes.use("/api/admin/*", async (c, next) => {
@@ -84,10 +89,6 @@ adminRoutes.get("/api/admin/bootstrap", async (c) => {
 });
 
 adminRoutes.post("/api/admin/bootstrap", async (c) => {
-  const admin = await getAdmin(c.env.DB);
-  if (admin !== null) {
-    return jsonError(c, 409, "already_bootstrapped", "El administrador ya existe. Usa login.");
-  }
   const ip = clientIp(c.req.raw);
   const verdict = await rateLimit(
     c.env.DB,
@@ -101,15 +102,6 @@ adminRoutes.post("/api/admin/bootstrap", async (c) => {
   if (!c.env.JWT_SECRET) {
     return jsonError(c, 503, "not_configured", "Falta JWT_SECRET en el entorno.");
   }
-  if (c.env.BOOTSTRAP_TOKEN) {
-    const bodyToken = await c.req
-      .json()
-      .then((b) => b?.bootstrap_token)
-      .catch(() => undefined);
-    if (bodyToken !== c.env.BOOTSTRAP_TOKEN) {
-      return jsonError(c, 403, "bad_bootstrap_token", "Token de bootstrap inválido.");
-    }
-  }
   const parsed = bootstrapSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
     return jsonError(
@@ -119,9 +111,20 @@ adminRoutes.post("/api/admin/bootstrap", async (c) => {
       "Usuario (≥3) y contraseña (≥12 caracteres) requeridos.",
     );
   }
+  if (c.env.BOOTSTRAP_TOKEN) {
+    const supplied = parsed.data.bootstrap_token ?? "";
+    if (!(await constantTimeEqual(supplied, c.env.BOOTSTRAP_TOKEN))) {
+      return jsonError(c, 403, "bad_bootstrap_token", "Token de bootstrap inválido.");
+    }
+  }
   const { username, password } = parsed.data;
   const hash = await hashPassword(c.env.JWT_SECRET, username, password);
-  await setAdmin(c.env.DB, username, hash);
+  // Atomic insert-or-lose: a racing second bootstrap gets 409 instead of
+  // silently overwriting the first admin (TOCTOU fix).
+  const created = await setAdmin(c.env.DB, username, hash);
+  if (!created) {
+    return jsonError(c, 409, "already_bootstrapped", "El administrador ya existe. Usa login.");
+  }
   await audit(c.env.DB, "system", "bootstrap", username, "admin account created");
 
   const { token, expiresAt } = await signSession(
@@ -129,7 +132,7 @@ adminRoutes.post("/api/admin/bootstrap", async (c) => {
     username,
     await getSessionVersion(c.env.DB),
   );
-  c.header("set-cookie", sessionCookie(token, expiresAt));
+  c.header("set-cookie", sessionCookie(token, expiresAt, isSecure(c)));
   return c.json({ success: true, username });
 });
 
@@ -156,27 +159,28 @@ adminRoutes.post("/api/admin/login", async (c) => {
   if (!parsed.success) return jsonError(c, 400, "invalid_request", "Credenciales requeridas.");
   const { username, password } = parsed.data;
 
-  const userVerdict = await rateLimit(
-    c.env.DB,
-    `login:user:${username}`,
-    LIMITS.LOGIN_MAX_ATTEMPTS,
-    LIMITS.LOGIN_WINDOW_S,
-  );
-  if (!userVerdict.allowed) {
-    return jsonError(
-      c,
-      429,
-      "rate_limited",
-      "Cuenta bloqueada temporalmente por intentos fallidos.",
-    );
-  }
-
   const admin = await getAdmin(c.env.DB);
   const ok =
     admin !== null &&
-    (await verifyPassword(c.env.JWT_SECRET, admin.username, password, admin.password_hash)) &&
-    admin.username === username;
+    admin.username === username &&
+    (await verifyPassword(c.env.JWT_SECRET, admin.username, password, admin.password_hash));
   if (!ok) {
+    // Only failures consume the per-user lockout budget, so an attacker can't
+    // permanently lock the (single) admin by spraying a wrong password.
+    const userVerdict = await rateLimit(
+      c.env.DB,
+      `login:user:${username}`,
+      LIMITS.LOGIN_MAX_ATTEMPTS,
+      LIMITS.LOGIN_WINDOW_S,
+    );
+    if (!userVerdict.allowed) {
+      return jsonError(
+        c,
+        429,
+        "rate_limited",
+        "Cuenta bloqueada temporalmente por intentos fallidos.",
+      );
+    }
     await audit(c.env.DB, username || ip, "login_failed", null, null);
     return jsonError(c, 401, "invalid_credentials", "Credenciales incorrectas.");
   }
@@ -187,7 +191,7 @@ adminRoutes.post("/api/admin/login", async (c) => {
     await getSessionVersion(c.env.DB),
   );
   await audit(c.env.DB, admin.username, "login", null, null);
-  c.header("set-cookie", sessionCookie(token, expiresAt));
+  c.header("set-cookie", sessionCookie(token, expiresAt, isSecure(c)));
   return c.json({ success: true, username: admin.username });
 });
 
@@ -209,7 +213,9 @@ adminRoutes.get("/api/admin/session", async (c) => {
       authenticated: false,
       needs_bootstrap: (await getAdmin(c.env.DB)) === null,
     });
-  const userSession = await verifySession(secret, token);
+  // Same revocation semantics as the guard: a logged-out token must report
+  // unauthenticated here too, not just fail on real endpoints.
+  const userSession = await verifySession(secret, token, await getSessionVersion(c.env.DB));
   return c.json({
     success: true,
     authenticated: userSession !== null,
@@ -238,7 +244,7 @@ adminRoutes.get("/api/admin/agents", async (c) => {
 adminRoutes.post("/api/admin/agents", async (c) => {
   const parsed = agentCreateSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
-    return jsonError(c, 400, "invalid_request", JSON.stringify(parsed.error.issues[0]?.message));
+    return jsonError(c, 400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid");
   }
   const input = parsed.data;
 
@@ -285,7 +291,7 @@ adminRoutes.put("/api/admin/agents/:key", async (c) => {
 
   const parsed = agentUpdateSchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) {
-    return jsonError(c, 400, "invalid_request", JSON.stringify(parsed.error.issues[0]?.message));
+    return jsonError(c, 400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid");
   }
   const input = parsed.data;
 
@@ -315,6 +321,9 @@ adminRoutes.put("/api/admin/agents/:key", async (c) => {
       return jsonError(c, 503, "not_configured", "Falta MASTER_KEY para cifrar la API key.");
     }
     fields.api_key_ciphertext = await encryptString(c.env.MASTER_KEY, input.api_key);
+  }
+  if (Object.keys(fields).length === 0) {
+    return jsonError(c, 400, "empty_update", "No hay campos que actualizar.");
   }
 
   await updateAgentFields(c.env.DB, key, fields);
@@ -448,17 +457,16 @@ adminRoutes.get("/api/admin/audit", async (c) => {
 
 adminRoutes.post("/api/admin/password", async (c) => {
   if (!c.env.JWT_SECRET) return jsonError(c, 503, "not_configured", "Falta JWT_SECRET.");
-  const body = await c.req.json().catch(() => null);
-  const current = body?.current_password;
-  const next = body?.new_password;
-  if (typeof current !== "string" || typeof next !== "string" || next.length < 12) {
+  const parsed = passwordChangeSchema.safeParse(await c.req.json().catch(() => null));
+  if (!parsed.success) {
     return jsonError(
       c,
       400,
       "invalid_request",
-      "Contraseña actual y nueva (≥12 caracteres) requeridas.",
+      "Contraseña actual y nueva (12-200 caracteres) requeridas.",
     );
   }
+  const { current_password: current, new_password: next } = parsed.data;
   const admin = await getAdmin(c.env.DB);
   if (
     !admin ||
@@ -467,12 +475,12 @@ adminRoutes.post("/api/admin/password", async (c) => {
     return jsonError(c, 401, "invalid_credentials", "Contraseña actual incorrecta.");
   }
   const hash = await hashPassword(c.env.JWT_SECRET, admin.username, next);
-  await setAdmin(c.env.DB, admin.username, hash);
+  await updateAdminPassword(c.env.DB, admin.username, hash);
   // Revoke all existing sessions (including this one) and re-issue fresh.
   const version = await bumpSessionVersion(c.env.DB);
   const { token, expiresAt } = await signSession(c.env.JWT_SECRET, admin.username, version);
   await audit(c.env.DB, user(c), "password_change", admin.username, null);
-  c.header("set-cookie", sessionCookie(token, expiresAt));
+  c.header("set-cookie", sessionCookie(token, expiresAt, isSecure(c)));
   return c.json({ success: true });
 });
 

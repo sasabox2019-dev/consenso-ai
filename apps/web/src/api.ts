@@ -67,7 +67,8 @@ export async function streamConsensus(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += decoder.decode(value, { stream: true });
+    // Normalize CRLF so proxy-rewritten streams still parse.
+    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
     let sep = buffer.indexOf("\n\n");
     while (sep !== -1) {
       const chunk = buffer.slice(0, sep);
@@ -92,11 +93,17 @@ export async function askIndividual(req: IndividualRequest): Promise<IndividualR
     headers: { "content-type": "application/json" },
     body: JSON.stringify(req),
   });
+  // Read the body exactly once: parseError consumes it on failures.
+  if (!res.ok) throw await parseError(res);
   const body = (await res.json().catch(() => null)) as {
     success?: boolean;
     result?: IndividualResult;
-  } & Record<string, unknown>;
-  if (!res.ok || !body?.success || !body.result) throw await parseError(res);
+  } | null;
+  if (!body?.success || !body.result) {
+    return Promise.reject(
+      new ApiError("bad_response", "Respuesta malformada del servidor.", res.status),
+    );
+  }
   return body.result;
 }
 
@@ -205,11 +212,11 @@ export async function testConnection(input: {
 }
 
 /** Tests an existing agent using its stored URL/model; the given key overrides the stored one. */
-export async function testStoredAgent(key: string, api_key: string): Promise<TestResult> {
+export async function testStoredAgent(key: string, api_key?: string): Promise<TestResult> {
   const res = await fetch(`/api/admin/agents/${encodeURIComponent(key)}/test`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ api_key }),
+    body: JSON.stringify(api_key ? { api_key } : {}),
   });
   if (!res.ok) throw await parseError(res);
   return res.json() as Promise<TestResult>;

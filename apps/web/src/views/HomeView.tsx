@@ -37,6 +37,7 @@ export default function HomeView() {
   const [individualResult, setIndividualResult] = useState<IndividualResult | null>(null);
   const [individualBusy, setIndividualBusy] = useState(false);
   const [showProcess, setShowProcess] = useState(false);
+  const [stopped, setStopped] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -44,9 +45,12 @@ export default function HomeView() {
       .then((p) => {
         setAgentsPayload(p);
         setSelected(p.participants.slice(0, 3).map((a) => a.key));
-        setIndividualAgent(p.participants[0]?.key ?? "");
+        // Preselect only agents that can actually run (have a key configured).
+        setIndividualAgent(p.participants.find((a) => a.has_api_key)?.key ?? "");
       })
       .catch((e) => setLoadError(e instanceof ApiError ? e.message : String(e)));
+    // Cancel any in-flight stream when leaving the view.
+    return () => abortRef.current?.abort();
   }, []);
 
   const toggleAgent = (key: string) => {
@@ -58,10 +62,13 @@ export default function HomeView() {
   };
 
   const reset = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
     setRun(emptyRun());
     setResult(null);
     setIndividualResult(null);
     setShowProcess(false);
+    setStopped(false);
   };
 
   const handleEvent = useCallback((e: StreamEvent) => {
@@ -128,7 +135,9 @@ export default function HomeView() {
         controller.signal,
       );
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === "AbortError")) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setStopped(true); // keep the partial progress visible with a neutral note
+      } else {
         setRun((prev) => ({
           ...prev,
           error: { code: "network", message: e instanceof ApiError ? e.message : String(e) },
@@ -143,7 +152,11 @@ export default function HomeView() {
   const stopConsensus = () => abortRef.current?.abort();
 
   const startIndividual = async () => {
-    if (question.trim().length < 10 || !individualAgent) return;
+    if (question.trim().length < 10) {
+      setRun({ ...emptyRun(), error: { code: "question", message: t("question_too_short") } });
+      return;
+    }
+    if (!individualAgent) return;
     reset();
     setIndividualBusy(true);
     try {
@@ -170,17 +183,18 @@ export default function HomeView() {
 
   return (
     <div className="space-y-5">
-      {/* mode tabs */}
+      {/* mode tabs — locked while a consensus run is streaming */}
       <div className="flex gap-2">
         {(["consensus", "individual"] as Mode[]).map((m) => (
           <button
             type="button"
             key={m}
+            disabled={running}
             onClick={() => {
               setMode(m);
               reset();
             }}
-            className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+            className={`rounded-xl px-4 py-2 text-sm font-medium transition disabled:opacity-40 ${
               mode === m
                 ? "bg-panel2 text-cyan border border-cyan/40"
                 : "text-dim border border-transparent hover:text-ink"
@@ -231,6 +245,9 @@ export default function HomeView() {
           {sortedParticipants.length < 3 && !loadError && (
             <p className="mt-2 text-sm text-warn">{t("agents_need")}</p>
           )}
+          {!moderator && !loadError && (
+            <p className="mt-2 text-sm text-warn">{t("no_moderator")}</p>
+          )}
         </section>
       )}
 
@@ -246,6 +263,7 @@ export default function HomeView() {
                   type="button"
                   key={a.key}
                   onClick={() => setIndividualAgent(a.key)}
+                  aria-pressed={individualAgent === a.key}
                   className={`rounded-xl border px-3.5 py-2 text-sm transition ${
                     individualAgent === a.key
                       ? "border-violet/60 bg-violet/10 text-ink"
@@ -307,14 +325,19 @@ export default function HomeView() {
         </div>
       </section>
 
-      {/* live progress */}
-      {(running || (result && !result.from_cache)) && mode === "consensus" && (
-        <ProgressPanel
-          stages={run.stages}
-          agents={run.agents}
-          participants={sortedParticipants}
-          done={Boolean(result)}
-        />
+      {/* live progress — visible while running and after a manual stop */}
+      {(running || stopped) && mode === "consensus" && (
+        <>
+          <ProgressPanel
+            stages={run.stages}
+            agents={run.agents}
+            participants={sortedParticipants.filter((a) => selected.includes(a.key))}
+            done={Boolean(result)}
+          />
+          {stopped && !result && (
+            <p className="mono-label text-center text-dim">{t("stopped_msg")}</p>
+          )}
+        </>
       )}
 
       {/* error */}

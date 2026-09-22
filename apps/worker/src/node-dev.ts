@@ -14,7 +14,6 @@ import { NodeSqliteD1 } from "./node/d1-sqlite";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workerRoot = join(here, "..");
-const repoRoot = join(workerRoot, "..", "..");
 
 // ---------------------------------------------------------------------------
 // Secrets (dev)
@@ -103,7 +102,8 @@ if (process.env.SEED_DEMO === "1") {
 // Serve
 // ---------------------------------------------------------------------------
 
-const assets = createAssetsHandler(join(repoRoot, "apps", "web", "dist"));
+// Same directory the production Worker serves (vite builds here directly).
+const assets = createAssetsHandler(join(workerRoot, "public"));
 const port = Number(process.env.PORT ?? 8787);
 
 const env = {
@@ -113,11 +113,37 @@ const env = {
   },
   MASTER_KEY: devVars.master_key,
   JWT_SECRET: devVars.jwt_secret,
+  // Enforced only when generated with one; e2e-generated dev-vars omit it.
+  BOOTSTRAP_TOKEN:
+    "bootstrap_token" in devVars
+      ? (devVars as { bootstrap_token: string }).bootstrap_token
+      : undefined,
 };
 
-serve({ fetch: (req) => app.fetch(req, env as never), port }, (info) => {
-  console.log(`🚀 Consenso AI v2 (node dev) → http://localhost:${info.port}`);
-  console.log(
-    `   UI: http://localhost:${info.port}/   API: http://localhost:${info.port}/api/agents`,
-  );
+// Loopback only: the dev server holds real secrets and has an open bootstrap
+// window — it must never be reachable from the LAN.
+const server = serve(
+  { fetch: (req) => app.fetch(req, env as never), port, hostname: "127.0.0.1" },
+  (info) => {
+    console.log(`🚀 Consenso AI v2 (node dev) → http://127.0.0.1:${info.port}`);
+    console.log(
+      `   UI: http://127.0.0.1:${info.port}/   API: http://127.0.0.1:${info.port}/api/agents`,
+    );
+  },
+);
+
+server.addListener("error", (err: NodeJS.ErrnoException) => {
+  if (err.code === "EADDRINUSE") {
+    console.error(`❌ Puerto ${port} ocupado (¿ya hay un servidor corriendo?).`);
+  } else {
+    console.error("❌ Error del servidor dev:", err.message);
+  }
+  process.exit(1);
 });
+
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.on(sig, () => {
+    server.close();
+    process.exit(0);
+  });
+}

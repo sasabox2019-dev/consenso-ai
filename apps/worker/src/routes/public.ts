@@ -32,13 +32,8 @@ publicRoutes.get("/api/agents", async (c) => {
 // ---------------------------------------------------------------------------
 
 publicRoutes.post("/api/consensus", async (c) => {
-  const body = await c.req.json().catch(() => null);
-  const parsed = consensusRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return jsonError(c, 400, "invalid_request", JSON.stringify(parsed.error.issues[0]?.message));
-  }
-  const { question, selected_agents } = parsed.data;
-
+  // Cheap guard first: the rate limiter runs before any body parsing so a
+  // flood pays nothing but a D1 counter.
   const ip = clientIp(c.req.raw);
   const verdict = await rateLimit(
     c.env.DB,
@@ -54,6 +49,13 @@ publicRoutes.post("/api/consensus", async (c) => {
       "Demasiadas consultas de consenso; inténtalo más tarde.",
     );
   }
+
+  const body = await c.req.json().catch(() => null);
+  const parsed = consensusRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return jsonError(c, 400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid");
+  }
+  const { question, selected_agents } = parsed.data;
 
   // Resolve agents.
   const rows = await listAgents(c.env.DB, true);
@@ -72,24 +74,13 @@ publicRoutes.post("/api/consensus", async (c) => {
       "Uno o más agentes seleccionados no son participantes activos.",
     );
   }
-  const participants = await Promise.all(
-    selectedRows.map((r) => toRuntimeAgent(r!, c.env.MASTER_KEY)),
-  );
-  const missingKeys = selected_agents.filter((_, i) => participants[i] === null);
-  if (missingKeys.length > 0) {
-    return jsonError(
-      c,
-      400,
-      "missing_api_keys",
-      `Agentes sin API key configurada: ${missingKeys.join(", ")}`,
-    );
-  }
-  const moderator = await toRuntimeAgent(moderatorRow, c.env.MASTER_KEY);
-  if (!moderator) {
-    return jsonError(c, 400, "moderator_no_key", "La moderadora no tiene API key configurada.");
-  }
 
-  const key = await cacheKey(question, selected_agents);
+  // Cache check before any expensive work — a hit costs no LLM calls.
+  const key = await cacheKey(
+    question,
+    selectedRows.map((r) => `${r!.key}|${r!.url}|${r!.model}|${r!.display_name}`),
+    `${moderatorRow.key}|${moderatorRow.url}|${moderatorRow.model}|${moderatorRow.display_name}`,
+  );
   const cached = cacheGet(key);
   if (cached) {
     const hit = { ...cached, from_cache: true };
@@ -112,12 +103,36 @@ publicRoutes.post("/api/consensus", async (c) => {
     return new Response(stream, { headers: sseHeaders() });
   }
 
+  const participants = await Promise.all(
+    selectedRows.map((r) => toRuntimeAgent(r!, c.env.MASTER_KEY)),
+  );
+  const missingKeys = selected_agents.filter((_, i) => participants[i] === null);
+  if (missingKeys.length > 0) {
+    return jsonError(
+      c,
+      400,
+      "missing_api_keys",
+      `Agentes sin API key configurada: ${missingKeys.join(", ")}`,
+    );
+  }
+  const moderator = await toRuntimeAgent(moderatorRow, c.env.MASTER_KEY);
+  if (!moderator) {
+    return jsonError(c, 400, "moderator_no_key", "La moderadora no tiene API key configurada.");
+  }
+
   const fetcher = c.env.LLM_FETCHER;
   const enc = new TextEncoder();
+  const abort = new AbortController();
   const stream = new ReadableStream({
     async start(controller) {
+      // Emitting after the client disconnects must never throw: the stream
+      // controller is closed the moment the request is cancelled.
       const emit = (event: import("@consenso/shared").StreamEvent) => {
-        controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
+        try {
+          controller.enqueue(enc.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          /* client gone — events are dropped, work continues to cancellation */
+        }
       };
       emit({ type: "status", stage: "start", message: "start" });
       try {
@@ -127,6 +142,7 @@ publicRoutes.post("/api/consensus", async (c) => {
           moderator,
           emit,
           fetcher,
+          signal: abort.signal,
         });
         cachePut(key, result);
         emit({ type: "final", result });
@@ -137,8 +153,17 @@ publicRoutes.post("/api/consensus", async (c) => {
           console.error("consensus failure", e);
           emit({ type: "error", code: "internal", message: "Error interno del sistema." });
         }
+      } finally {
+        try {
+          controller.close();
+        } catch {
+          /* already closed by client cancellation */
+        }
       }
-      controller.close();
+    },
+    // Client disconnect / Stop button: cancel every in-flight LLM call.
+    cancel() {
+      abort.abort();
     },
   });
 
@@ -159,13 +184,6 @@ function sseHeaders(): Record<string, string> {
 // ---------------------------------------------------------------------------
 
 publicRoutes.post("/api/individual", async (c) => {
-  const body = await c.req.json().catch(() => null);
-  const parsed = individualRequestSchema.safeParse(body);
-  if (!parsed.success) {
-    return jsonError(c, 400, "invalid_request", JSON.stringify(parsed.error.issues[0]?.message));
-  }
-  const { question, agent: agentKey } = parsed.data;
-
   const ip = clientIp(c.req.raw);
   const verdict = await rateLimit(
     c.env.DB,
@@ -182,6 +200,13 @@ publicRoutes.post("/api/individual", async (c) => {
     );
   }
 
+  const body = await c.req.json().catch(() => null);
+  const parsed = individualRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return jsonError(c, 400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid");
+  }
+  const { question, agent: agentKey } = parsed.data;
+
   const row = await getAgent(c.env.DB, agentKey);
   if (!row || !row.active) {
     return jsonError(c, 404, "agent_not_found", `Agente '${agentKey}' no encontrado o inactivo.`);
@@ -191,9 +216,16 @@ publicRoutes.post("/api/individual", async (c) => {
     return jsonError(c, 400, "missing_api_key", "El agente no tiene API key configurada.");
   }
 
+  const abort = new AbortController();
+  c.req.raw.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const started = Date.now();
   try {
-    const out = await runIndividual({ question, agent: runtime, fetcher: c.env.LLM_FETCHER });
+    const out = await runIndividual({
+      question,
+      agent: runtime,
+      fetcher: c.env.LLM_FETCHER,
+      signal: abort.signal,
+    });
     return c.json({
       success: true,
       result: {

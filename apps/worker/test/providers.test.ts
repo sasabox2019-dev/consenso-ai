@@ -129,3 +129,56 @@ describe("callChatCompletion", () => {
     expect(r.error?.type).toBe("parse_error");
   });
 });
+
+describe("regression: audit provider fixes", () => {
+  const base = {
+    url: "https://api.example.com/v1/chat/completions",
+    model: "test-model",
+    apiKey: "sk-test",
+    messages: [{ role: "user" as const, content: "hi" }],
+    temperature: 0.5,
+    timeoutS: 1,
+  };
+
+  it("does NOT retry timeouts (a timeout already consumed the full budget)", async () => {
+    let calls = 0;
+    const fetcher = (_url: string, init?: RequestInit): Promise<Response> => {
+      calls++;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const e = new Error("aborted");
+          e.name = "AbortError";
+          reject(e);
+        });
+      });
+    };
+    const r = await callChatCompletion({ ...base, fetcher: fetcher as typeof fetch, retries: 2 });
+    expect(calls).toBe(1);
+    expect(r.error?.type).toBe("timeout");
+  });
+
+  it("aborts immediately when the external signal fires (client disconnect)", async () => {
+    let calls = 0;
+    const fetcher = (_url: string, init?: RequestInit): Promise<Response> => {
+      calls++;
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const e = new Error("aborted");
+          e.name = "AbortError";
+          reject(e);
+        });
+      });
+    };
+    const controller = new AbortController();
+    const pending = callChatCompletion({
+      ...base,
+      fetcher: fetcher as typeof fetch,
+      retries: 3,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 50);
+    const r = await pending;
+    expect(calls).toBe(1);
+    expect(r.content).toBe(null);
+  });
+});

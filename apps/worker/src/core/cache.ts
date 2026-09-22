@@ -14,10 +14,21 @@ interface Entry {
 
 const store = new Map<string, Entry>();
 
-export async function cacheKey(question: string, agentKeys: string[]): Promise<string> {
+/**
+ * Cache key covers the question AND the full relevant configuration
+ * (participant + moderator url/model/display_name), so an admin edit
+ * immediately produces different keys instead of serving stale results.
+ */
+export async function cacheKey(
+  question: string,
+  participantConfigs: string[],
+  moderatorConfig: string,
+): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(`${question}|${[...agentKeys].sort().join(",")}`),
+    new TextEncoder().encode(
+      `${question}|${[...participantConfigs].sort().join(",")}|${moderatorConfig}`,
+    ),
   );
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }

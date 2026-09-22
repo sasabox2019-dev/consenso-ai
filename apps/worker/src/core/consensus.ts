@@ -56,6 +56,7 @@ async function callParticipant(
   round: 1 | 2,
   round1Context: Array<{ name: string; answer: string }> | null,
   fetcher?: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<RoundOutcome> {
   const system = buildConsensusSystemPrompt(agent.name, round);
   const user =
@@ -76,12 +77,14 @@ async function callParticipant(
     temperature: 0.8,
     timeoutS: agent.timeout_s,
     fetcher,
+    signal,
   });
 
   if (res.error || res.content === null) {
     const err = res.error ?? { message: "Respuesta vacía", detail: "" };
+    // Public surface: status class only — never leak upstream response bodies.
     return {
-      slot: { status: "error", error: `${err.message}: ${err.detail.slice(0, 120)}`.trim() },
+      slot: { status: "error", error: err.message },
       elapsed_ms: res.elapsed_ms,
     };
   }
@@ -110,6 +113,7 @@ async function callModerator(
   question: string,
   answers: Array<{ name: string; confidence: number; answer: string; keyPoints: string[] }>,
   fetcher?: typeof fetch,
+  signal?: AbortSignal,
 ): Promise<{ text: string; elapsed_ms: number } | { error: string; elapsed_ms: number }> {
   const res = await callChatCompletion({
     url: moderator.url,
@@ -119,11 +123,12 @@ async function callModerator(
     temperature: 0.65,
     timeoutS: moderator.timeout_s,
     fetcher,
+    signal,
   });
   if (res.error || res.content === null || res.content.trim().length === 0) {
     const err = res.error ?? { message: "Respuesta vacía", detail: "" };
     return {
-      error: `${err.message}: ${err.detail.slice(0, 120)}`.trim(),
+      error: err.message, // status class only; no upstream body fragments
       elapsed_ms: res.elapsed_ms,
     };
   }
@@ -172,16 +177,18 @@ export interface RunConsensusArgs {
   moderator: AgentRuntime;
   emit: (event: StreamEvent) => void;
   fetcher?: typeof fetch;
+  /** Aborted when the client disconnects — in-flight LLM calls cancel immediately. */
+  signal?: AbortSignal;
 }
 
 export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusResult> {
-  const { question, participants, moderator, emit, fetcher } = args;
+  const { question, participants, moderator, emit, fetcher, signal } = args;
   const started = Date.now();
 
   emit({ type: "round", round: 1, status: "start" });
   const round1 = await Promise.all(
     participants.map(async (p) => {
-      const outcome = await callParticipant(p, question, 1, null, fetcher);
+      const outcome = await callParticipant(p, question, 1, null, fetcher, signal);
       emit({
         type: "agent",
         round: 1,
@@ -203,10 +210,18 @@ export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusRes
     answer: r.outcome.slot.status === "ok" ? r.outcome.slot.data.answer : "",
   }));
 
+  // Don't pay for round 2 if fewer than two participants survived round 1.
+  if (r1Ok.length < 2) {
+    throw new ConsensusError(
+      "not_enough_participants",
+      "Menos de 2 participantes respondieron; no se puede formar consenso.",
+    );
+  }
+
   emit({ type: "round", round: 2, status: "start" });
   const round2 = await Promise.all(
     participants.map(async (p) => {
-      const outcome = await callParticipant(p, question, 2, r1Context, fetcher);
+      const outcome = await callParticipant(p, question, 2, r1Context, fetcher, signal);
       emit({
         type: "agent",
         round: 2,
@@ -250,8 +265,11 @@ export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusRes
     keyPoints: r.slot?.status === "ok" ? r.slot.data.key_points : [],
   }));
 
+  if (signal?.aborted) {
+    throw new ConsensusError("aborted", "Proceso cancelado por el usuario.");
+  }
   emit({ type: "moderation", status: "start" });
-  const moderation = await callModerator(moderator, question, moderatorInput, fetcher);
+  const moderation = await callModerator(moderator, question, moderatorInput, fetcher, signal);
 
   let consensus: string;
   let moderatorFallback = false;
@@ -327,6 +345,7 @@ export async function runIndividual(args: {
   question: string;
   agent: AgentRuntime;
   fetcher?: typeof fetch;
+  signal?: AbortSignal;
 }): Promise<{
   answer: string;
   key_points: string[];
@@ -344,11 +363,13 @@ export async function runIndividual(args: {
     temperature: 0.85,
     timeoutS: args.agent.timeout_s,
     fetcher: args.fetcher,
+    signal: args.signal,
   });
 
   if (res.error || res.content === null) {
     const err = res.error ?? { message: "Respuesta vacía", detail: "" };
-    throw new ConsensusError("agent_failed", `${err.message}: ${err.detail.slice(0, 200)}`.trim());
+    // Status class only — upstream response bodies stay on the server.
+    throw new ConsensusError("agent_failed", err.message);
   }
 
   const extracted = extractAgentOutput(res.content);

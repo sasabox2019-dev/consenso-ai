@@ -29,6 +29,8 @@ if (!existsSync(outFile)) {
   console.log("ℹ️  .dev-vars.json ya existe");
 }
 
-// Surface the bootstrap token for convenience.
+// Surface the bootstrap token for convenience (only when this script generated it).
 const vars = JSON.parse(readFileSync(outFile, "utf8"));
-console.log(`ℹ️  Bootstrap token dev: ${vars.bootstrap_token}`);
+if (vars.bootstrap_token) {
+  console.log(`ℹ️  Bootstrap token dev: ${vars.bootstrap_token}`);
+}

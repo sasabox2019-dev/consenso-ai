@@ -13,10 +13,14 @@ const app = new Hono<{ Bindings: Env }>();
 // Security headers on every response
 // ---------------------------------------------------------------------------
 
+const CSP =
+  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
+
 app.use("*", async (c, next) => {
   await next();
   c.header("x-content-type-options", "nosniff");
   c.header("x-frame-options", "DENY");
+  c.header("content-security-policy", CSP);
   c.header("referrer-policy", "no-referrer");
   c.header("permissions-policy", "camera=(), microphone=(), geolocation=()");
   if (new URL(c.req.url).protocol === "https:") {
@@ -24,8 +28,15 @@ app.use("*", async (c, next) => {
   }
 });
 
-// Never cache API responses.
+// Never cache API responses; reject oversized bodies before any parsing.
 app.use("/api/*", async (c, next) => {
+  const contentLength = Number(c.req.header("content-length") ?? "0");
+  if (contentLength > 10_000) {
+    return c.json(
+      { success: false, error: { code: "payload_too_large", message: "Cuerpo demasiado grande." } },
+      413,
+    );
+  }
   await next();
   c.header("cache-control", "no-store");
 });

@@ -54,7 +54,13 @@ export default function AdminView() {
 
   if (session.needs_bootstrap) return <Bootstrap onDone={refreshSession} />;
   if (!session.authenticated) return <Login onDone={refreshSession} />;
-  return <Panel username={session.username ?? "admin"} onLogout={refreshSession} />;
+  return (
+    <Panel
+      username={session.username ?? "admin"}
+      onLogout={refreshSession}
+      onSessionExpired={refreshSession}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +69,7 @@ function Bootstrap({ onDone }: { onDone: () => void }) {
   const { t } = useI18n();
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -98,7 +105,7 @@ function Bootstrap({ onDone }: { onDone: () => void }) {
       <Field label={t("password")}>
         <div className="flex gap-2">
           <input
-            type="text"
+            type={showPassword ? "text" : "password"}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -112,6 +119,15 @@ function Bootstrap({ onDone }: { onDone: () => void }) {
             className="btn-secondary whitespace-nowrap"
           >
             {t("generate")}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowPassword((s) => !s)}
+            aria-label={showPassword ? "hide password" : "show password"}
+            aria-pressed={showPassword}
+            className="btn-secondary"
+          >
+            {showPassword ? "🙈" : "👁"}
           </button>
         </div>
       </Field>
@@ -178,7 +194,15 @@ function Login({ onDone }: { onDone: () => void }) {
 
 // ---------------------------------------------------------------------------
 
-function Panel({ username, onLogout }: { username: string; onLogout: () => void }) {
+function Panel({
+  username,
+  onLogout,
+  onSessionExpired,
+}: {
+  username: string;
+  onLogout: () => void;
+  onSessionExpired: () => void;
+}) {
   const { t } = useI18n();
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([]);
@@ -188,10 +212,21 @@ function Panel({ username, onLogout }: { username: string; onLogout: () => void 
   >(null);
   const [testing, setTesting] = useState<AdminAgent | null>(null);
 
+  /** Routes 401s back to the login form instead of piling up red banners. */
+  const guard = (e: unknown): boolean => {
+    if (e instanceof ApiError && e.status === 401) {
+      onSessionExpired();
+      return true;
+    }
+    return false;
+  };
+
   const reload = useCallback(() => {
     adminAgents()
       .then(setAgents)
-      .catch((e) => setError(errMsg(e)));
+      .catch((e) => {
+        if (!(e instanceof ApiError && e.status === 401)) setError(errMsg(e));
+      });
     fetchAudit(100)
       .then(setAuditEntries)
       .catch(() => {});
@@ -206,7 +241,7 @@ function Panel({ username, onLogout }: { username: string; onLogout: () => void 
       await deleteAgent(agent.key);
       reload();
     } catch (e) {
-      setError(errMsg(e));
+      if (!guard(e)) setError(errMsg(e));
     }
   };
 
@@ -233,7 +268,7 @@ function Panel({ username, onLogout }: { username: string; onLogout: () => void 
           <button
             type="button"
             onClick={() => setEditing({ mode: "create" })}
-            className="btn-primary !py-1.5 text-xs"
+            className="btn-primary py-1.5! text-xs"
           >
             + {t("add_agent")}
           </button>
@@ -268,7 +303,9 @@ function Panel({ username, onLogout }: { username: string; onLogout: () => void 
                       {a.has_api_key ? `● ${t("key_configured")}` : `○ ${t("key_missing")}`}
                     </span>
                   </td>
-                  <td className="py-2 pr-3 text-dim">{a.has_api_key ? "✓" : "—"}</td>
+                  <td className={`py-2 pr-3 ${a.active ? "text-good" : "text-bad"}`}>
+                    {a.active ? "✓" : "✗"}
+                  </td>
                   <td className="py-2 text-right whitespace-nowrap">
                     <button
                       type="button"
@@ -309,11 +346,12 @@ function Panel({ username, onLogout }: { username: string; onLogout: () => void 
             setEditing(null);
             reload();
           }}
+          guard={guard}
         />
       )}
-      {testing && <TestDialog agent={testing} onClose={() => setTesting(null)} />}
+      {testing && <TestDialog agent={testing} onClose={() => setTesting(null)} guard={guard} />}
 
-      <PasswordCard />
+      <PasswordCard guard={guard} />
       <AuditCard entries={auditEntries} />
     </div>
   );
@@ -338,10 +376,12 @@ function AgentForm({
   initial,
   onCancel,
   onSaved,
+  guard,
 }: {
   initial: AdminAgent | null;
   onCancel: () => void;
   onSaved: () => void;
+  guard: (e: unknown) => boolean;
 }) {
   const { t } = useI18n();
   const [form, setForm] = useState<AgentUpsert & { key: string }>({
@@ -353,6 +393,7 @@ function AgentForm({
     api_key: "",
     timeout_s: initial?.timeout_s ?? 45,
     role: initial?.role ?? "participant",
+    active: initial?.active ?? true,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -372,6 +413,7 @@ function AgentForm({
         api_key: form.api_key || undefined,
         timeout_s: form.timeout_s,
         role: form.role,
+        active: form.active,
       };
       if (initial) {
         await updateAgent(initial.key, payload);
@@ -380,7 +422,7 @@ function AgentForm({
       }
       onSaved();
     } catch (err) {
-      setError(errMsg(err));
+      if (!guard(err)) setError(errMsg(err));
     } finally {
       setBusy(false);
     }
@@ -396,7 +438,7 @@ function AgentForm({
               value={form.key}
               onChange={(e) => set("key", e.target.value)}
               required
-              pattern="[a-z0-9][a-z0-9_-]{1,31}"
+              pattern="[a-z0-9][a-z0-9_-]{0,31}"
               className={inputCls}
               placeholder="openai"
             />
@@ -451,9 +493,11 @@ function AgentForm({
           />
         </Field>
         <Field label="name (interno)">
+          {/* Required on create: the server needs an internal name for prompts. */}
           <input
             value={form.name}
             onChange={(e) => set("name", e.target.value)}
+            required={!initial}
             className={inputCls}
             placeholder="Agent_ChatGPT"
           />
@@ -462,11 +506,25 @@ function AgentForm({
           <input
             value={form.api_key}
             onChange={(e) => set("api_key", e.target.value)}
+            required={!initial}
+            minLength={initial ? undefined : 8}
             className={inputCls}
             placeholder={initial ? `(${t("api_key_keep")})` : "sk-…"}
             autoComplete="off"
           />
         </Field>
+        {initial && (
+          <Field label={t("active")}>
+            <select
+              value={form.active ? "1" : "0"}
+              onChange={(e) => set("active", e.target.value === "1")}
+              className={inputCls}
+            >
+              <option value="1">✓</option>
+              <option value="0">✗</option>
+            </select>
+          </Field>
+        )}
       </div>
       {error && <p className="text-sm text-bad">{error}</p>}
       <div className="flex gap-2">
@@ -481,20 +539,32 @@ function AgentForm({
   );
 }
 
-function TestDialog({ agent, onClose }: { agent: AdminAgent; onClose: () => void }) {
+function TestDialog({
+  agent,
+  onClose,
+  guard,
+}: {
+  agent: AdminAgent;
+  onClose: () => void;
+  guard: (e: unknown) => boolean;
+}) {
   const { t } = useI18n();
   const [apiKey, setApiKey] = useState("");
   const [result, setResult] = useState<TestResult | null>(null);
   const [busy, setBusy] = useState(false);
 
   const run = async () => {
-    if (!apiKey) return;
     setBusy(true);
     setResult(null);
     try {
-      setResult(await testStoredAgent(agent.key, apiKey));
+      // Empty field → server tests with the stored (decrypted) key.
+      setResult(await testStoredAgent(agent.key, apiKey || undefined));
     } catch (e) {
-      setResult({ success: false, message: errMsg(e) });
+      if (guard(e)) {
+        onClose();
+      } else {
+        setResult({ success: false, message: errMsg(e) });
+      }
     } finally {
       setBusy(false);
     }
@@ -510,12 +580,17 @@ function TestDialog({ agent, onClose }: { agent: AdminAgent; onClose: () => void
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           className={inputCls}
-          placeholder="sk-…"
+          placeholder={agent.has_api_key ? `(${t("api_key_keep")})` : "sk-…"}
           autoComplete="off"
         />
       </Field>
       <div className="flex gap-2">
-        <button type="button" onClick={run} disabled={busy || !apiKey} className="btn-primary">
+        <button
+          type="button"
+          onClick={run}
+          disabled={busy || (!apiKey && !agent.has_api_key)}
+          className="btn-primary"
+        >
           {t("test_connection")}
         </button>
         <button type="button" onClick={onClose} className="btn-secondary">
@@ -535,21 +610,25 @@ function TestDialog({ agent, onClose }: { agent: AdminAgent; onClose: () => void
   );
 }
 
-function PasswordCard() {
+function PasswordCard({ guard }: { guard: (e: unknown) => boolean }) {
   const { t } = useI18n();
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setBusy(true);
     try {
       await changePassword(current, next);
       setMsg({ ok: true, text: "✓" });
       setCurrent("");
       setNext("");
     } catch (err) {
-      setMsg({ ok: false, text: errMsg(err) });
+      if (!guard(err)) setMsg({ ok: false, text: errMsg(err) });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -580,7 +659,7 @@ function PasswordCard() {
         </Field>
       </div>
       {msg && <p className={`text-sm ${msg.ok ? "text-good" : "text-bad"}`}>{msg.text}</p>}
-      <button type="submit" className="btn-primary">
+      <button type="submit" disabled={busy} className="btn-primary">
         {t("save")}
       </button>
     </form>

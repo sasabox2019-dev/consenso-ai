@@ -14,7 +14,9 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const workerRoot = join(here, "..", "..");
-const BASE = "http://127.0.0.1:8787";
+// Random high port: never collide with a dev server the user has running.
+const PORT = 9200 + Math.floor(Math.random() * 700);
+const BASE = `http://127.0.0.1:${PORT}`;
 const results = [];
 
 function check(name, ok, detail = "") {
@@ -73,7 +75,7 @@ async function main() {
     SEED_DEMO: "1",
     DEMO_LLM_URL: "http://127.0.0.1:8790/v1/chat/completions",
     DEV_DB_DIR: dataDir,
-    PORT: "8787",
+    PORT: String(PORT),
   });
 
   try {
@@ -123,7 +125,7 @@ async function main() {
     const boot2 = await fetch(`${BASE}/api/admin/bootstrap`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "x", password }),
+      body: JSON.stringify({ username: "otheradmin", password }),
     });
     check("second bootstrap → 409", boot2.status === 409);
 

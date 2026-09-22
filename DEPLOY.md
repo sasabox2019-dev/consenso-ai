@@ -5,7 +5,7 @@ One Worker ships the API and the UI together. Everything below is free.
 ## 0. Prerequisites
 
 - A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free)
-- Node ≥ 20 and npm
+- Node ≥ 22.13 and npm (the local runtime uses `node:sqlite`)
 - `npx wrangler login` (opens a browser)
 
 ## 1. Create the D1 database
@@ -49,10 +49,10 @@ This builds the UI into `apps/worker/public` and deploys Worker + assets. Your U
 ## 5. First run on the deployed URL
 
 1. Open `https://…/workers.dev/#/admin`
-2. "Primer arranque" — create the admin account (use the *Generar* button or a password manager; minimum 12 chars)
+2. "Primer arranque" / "First run" — create the admin account (use the *Generar / Generate* button or a password manager; minimum 12 chars)
 3. Add your agents (role `Moderadora` for exactly one, e.g. Groq; the rest `Participante`)
    - URL examples: `https://api.groq.com/openai/v1/chat/completions`, `https://openrouter.ai/api/v1/chat/completions`, `https://api.deepseek.com/chat/completions`, `https://api.mistral.ai/v1/chat/completions`
-4. Use *Probar conexión* to verify each agent
+4. Use *Probar conexión / Test connection* to verify each agent
 5. Go to `#/` and run your first consensus
 
 ## Updating

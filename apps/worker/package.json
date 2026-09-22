@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node scripts/gen-dev-vars.mjs && tsx src/node-dev.ts",
-    "dev:seed": "node scripts/gen-dev-vars.mjs && SEED_DEMO=1 tsx src/node-dev.ts",
+    "dev": "node scripts/gen-dev-vars.mjs && SEED_DEMO=1 tsx src/node-dev.ts",
+    "dev:plain": "node scripts/gen-dev-vars.mjs && tsx src/node-dev.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

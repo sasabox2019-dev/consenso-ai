@@ -195,3 +195,77 @@ describe("runConsensus", () => {
     expect(seen.some((c) => c.includes("A"))).toBe(true); // round1 answers visible by display name
   });
 });
+
+describe("regression: audit engine fixes", () => {
+  const moderator = makeAgent("groq", "mod");
+
+  it("skips round 2 when fewer than 2 participants survived round 1", async () => {
+    let round2Calls = 0;
+    const events: StreamEvent[] = [];
+    const fetcher = (async (input: Request | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as {
+        model: string;
+        messages: { content: string }[];
+      };
+      if (body.model === "mod") {
+        return new Response(JSON.stringify({ choices: [{ message: { content: "mod" } }] }), {
+          status: 200,
+        });
+      }
+      const isRound2 = body.messages.some(
+        (m) => m.content.includes("RONDA 2") || m.content.includes("Respuestas de otros expertos"),
+      );
+      if (isRound2) round2Calls++;
+      if (body.model.includes("fail")) return new Response("dead", { status: 500 });
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: expertJson(body.model, 80) } }] }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+
+    const mixed = [makeAgent("a", "expert-a"), makeAgent("b", "fail-b"), makeAgent("c", "fail-c")];
+    await expect(
+      runConsensus({
+        question: "Pregunta con mayoría fallida en ronda 1",
+        participants: mixed,
+        moderator,
+        emit: (e) => events.push(e),
+        fetcher,
+      }),
+    ).rejects.toMatchObject({ code: "not_enough_participants" });
+    expect(round2Calls).toBe(0); // round 2 never ran
+  });
+
+  it("stops cleanly when the abort signal fires mid-run (client disconnect)", async () => {
+    const controller = new AbortController();
+    const fetcher = (async (_input: Request | string, init?: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const e = new Error("aborted");
+          e.name = "AbortError";
+          reject(e);
+        });
+      });
+    }) as typeof fetch;
+
+    const participants = [
+      makeAgent("a", "expert-a"),
+      makeAgent("b", "expert-b"),
+      makeAgent("c", "expert-c"),
+    ];
+    // Fire the abort (simulating the client hitting Stop) shortly after start.
+    setTimeout(() => controller.abort(), 50);
+    await expect(
+      runConsensus({
+        question: "Pregunta cancelada por el usuario",
+        participants,
+        moderator,
+        emit: () => {},
+        fetcher,
+        signal: controller.signal,
+      }),
+    ).rejects.toMatchObject({ code: "not_enough_participants" });
+    // Signal was observed: all three calls rejected via abort, no hang.
+    expect(controller.signal.aborted).toBe(true);
+  });
+});

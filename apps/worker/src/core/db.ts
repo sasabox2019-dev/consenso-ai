@@ -122,16 +122,36 @@ export async function getAdmin(db: D1Database): Promise<AdminRow | null> {
     .first<AdminRow>();
 }
 
+/**
+ * Creates the admin account atomically. Returns false when an admin already
+ * exists — this closes the bootstrap race where two clients both pass the
+ * getAdmin() null-check and the last writer would own the account.
+ */
 export async function setAdmin(
+  db: D1Database,
+  username: string,
+  passwordHash: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      `INSERT INTO admin_user (id, username, password_hash) VALUES (1, ?, ?)
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(username, passwordHash)
+    .run();
+  return (res.meta?.changes ?? 0) > 0;
+}
+
+/** Rotates the existing admin's credentials (bootstrap uses setAdmin instead). */
+export async function updateAdminPassword(
   db: D1Database,
   username: string,
   passwordHash: string,
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO admin_user (id, username, password_hash) VALUES (1, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET username = excluded.username, password_hash = excluded.password_hash,
-       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
+      `UPDATE admin_user SET username = ?, password_hash = ?,
+       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1`,
     )
     .bind(username, passwordHash)
     .run();
@@ -166,9 +186,15 @@ export async function getSessionVersion(db: D1Database): Promise<number> {
 }
 
 export async function bumpSessionVersion(db: D1Database): Promise<number> {
-  const next = (await getSessionVersion(db)) + 1;
-  await setSetting(db, "session_ver", String(next));
-  return next;
+  // Atomic increment: concurrent logouts can't lose a revocation.
+  const row = await db
+    .prepare(
+      `INSERT INTO settings (key, value) VALUES ('session_ver', '2')
+       ON CONFLICT(key) DO UPDATE SET value = CAST(settings.value AS INTEGER) + 1
+       RETURNING value`,
+    )
+    .first<{ value: string }>();
+  return Number(row?.value ?? 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -186,6 +212,12 @@ export async function audit(
     .prepare("INSERT INTO audit_log (actor, action, target, detail) VALUES (?, ?, ?, ?)")
     .bind(actor, action, target, detail?.slice(0, 500) ?? null)
     .run();
+  // Opportunistic retention (~1% of writes): keep roughly the last 90 days.
+  if (Math.random() < 0.01) {
+    await db
+      .prepare("DELETE FROM audit_log WHERE ts < strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 days')")
+      .run();
+  }
 }
 
 export async function recentAudit(db: D1Database, limit = 100): Promise<AuditRow[]> {

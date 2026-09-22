@@ -68,14 +68,16 @@ export async function verifySession(
   return decoded.sub;
 }
 
-export function sessionCookie(token: string, expiresAt: number): string {
+/** `secure` is set for https origins (production); local http dev omits it. */
+export function sessionCookie(token: string, expiresAt: number, secure = false): string {
   const parts = [
     `${SESSION_COOKIE}=${token}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
+    secure ? "Secure" : "",
     `Expires=${new Date(expiresAt * 1000).toUTCString()}`,
-  ];
+  ].filter(Boolean);
   return parts.join("; ");
 }
 

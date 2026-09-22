@@ -14,8 +14,8 @@ export default function MetricsBar({ metrics }: { metrics: ConsensusMetrics }) {
     {
       label: t("metrics_agreement"),
       value: metrics.agreement_level,
-      bar:
-        metrics.agreement_level === "HIGH" ? 85 : metrics.agreement_level === "MODERATE" ? 55 : 25,
+      // Bar reflects the real participant survival ratio, not a fabricated constant.
+      bar: metrics.agents_total > 0 ? (metrics.agents_ok / metrics.agents_total) * 100 : 0,
       valueClass: AGREEMENT_COLOR[metrics.agreement_level],
     },
     { label: t("metrics_time"), value: `${metrics.processing_time_s}s`, bar: null },

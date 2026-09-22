@@ -20,8 +20,9 @@ function makeEnv(opts: { mock?: typeof fetch; masterKey?: string } = {}): Env {
   return {
     DB: db,
     ASSETS: { fetch: async () => new Response("no ui in tests", { status: 404 }) },
-    MASTER_KEY: opts.masterKey ?? "mk-test-123",
-    JWT_SECRET: "jwt-test-secret",
+    MASTER_KEY:
+      opts.masterKey ?? "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    JWT_SECRET: "jwt-test-secret-with-enough-length-for-hmac",
     LLM_FETCHER: opts.mock,
   };
 }
@@ -174,18 +175,19 @@ describe("admin bootstrap & auth", () => {
     expect(boot.status).toBe(200);
     const cookie = cookieOf(boot);
 
+    // Second bootstrap with VALID credentials loses the atomic insert → 409.
     const again = await app.request(
       "/api/admin/bootstrap",
       {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ username: "x", password: "long-password-123" }),
+        body: JSON.stringify({ username: "other", password: "long-password-123" }),
       },
       env,
     );
     expect(again.status).toBe(409);
 
-    // Short password rejected (already-bootstrapped check fires first)
+    // Invalid payload (short password) is rejected by validation → 400.
     const bad = await app.request(
       "/api/admin/bootstrap",
       {
@@ -195,7 +197,7 @@ describe("admin bootstrap & auth", () => {
       },
       env,
     );
-    expect(bad.status).toBe(409);
+    expect(bad.status).toBe(400);
   });
 
   it("admin routes require session; wrong cookie rejected", async () => {
@@ -534,7 +536,8 @@ describe("rate limiting", () => {
       );
       expect(r.status).toBe(401);
     }
-    const sixth = await app.request(
+    // Only failures consume the lockout budget: the correct password still works.
+    const good = await app.request(
       "/api/admin/login",
       {
         method: "POST",
@@ -543,6 +546,179 @@ describe("rate limiting", () => {
       },
       env,
     );
+    expect(good.status).toBe(200);
+    // ...but the 6th wrong attempt is throttled.
+    const sixth = await app.request(
+      "/api/admin/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "wrong-final" }),
+      },
+      env,
+    );
     expect(sixth.status).toBe(429);
+  });
+});
+
+describe("regression: audit fixes", () => {
+  it("rejects duplicate keys in selected_agents", async () => {
+    await setupAgents(env);
+    const res = await app.request(
+      "/api/consensus",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: "Pregunta con agentes duplicados aquí",
+          selected_agents: ["a", "a", "b"],
+        }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects http:// URLs on agent update (same rule as create)", async () => {
+    const cookie = await setupAgents(env);
+    const res = await app.request(
+      "/api/admin/agents/b",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({ url: "http://169.254.169.254/latest/meta-data" }),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for an empty agent update", async () => {
+    const cookie = await setupAgents(env);
+    const res = await app.request(
+      "/api/admin/agents/b",
+      {
+        method: "PUT",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({}),
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { code: string } };
+    expect(body.error.code).toBe("empty_update");
+  });
+
+  it("rejects oversized request bodies with 413", async () => {
+    await setupAgents(env);
+    const res = await app.request(
+      "/api/consensus",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "content-length": "20000" },
+        body: JSON.stringify({
+          question: "x".repeat(1000),
+          selected_agents: ["a", "b", "c"],
+          padding: "y".repeat(15000),
+        }),
+      },
+      env,
+    );
+    expect(res.status).toBe(413);
+  });
+
+  it("reports authenticated:false on /session after logout (revocation)", async () => {
+    const cookie = await setupAgents(env);
+    const before = await app.request("/api/admin/session", { headers: { cookie } }, env);
+    const beforeBody = (await before.json()) as { authenticated: boolean };
+    expect(beforeBody.authenticated).toBe(true);
+
+    await app.request("/api/admin/logout", { method: "POST", headers: { cookie } }, env);
+    const after = await app.request("/api/admin/session", { headers: { cookie } }, env);
+    const afterBody = (await after.json()) as { authenticated: boolean };
+    expect(afterBody.authenticated).toBe(false);
+  });
+
+  it("password change rotates credentials and revokes old sessions", async () => {
+    const cookie = await setupAgents(env);
+    const res = await app.request(
+      "/api/admin/password",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          current_password: "long-password-123",
+          new_password: "brand-new-password-456",
+        }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+
+    // Old session revoked (version bumped).
+    const oldSession = await app.request("/api/admin/agents", { headers: { cookie } }, env);
+    expect(oldSession.status).toBe(401);
+
+    // New password works; old one doesn't.
+    const badLogin = await app.request(
+      "/api/admin/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "long-password-123" }),
+      },
+      env,
+    );
+    expect(badLogin.status).toBe(401);
+    const goodLogin = await app.request(
+      "/api/admin/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "brand-new-password-456" }),
+      },
+      env,
+    );
+    expect(goodLogin.status).toBe(200);
+  });
+
+  it("second bootstrap cannot overwrite the first admin (atomic)", async () => {
+    const first = await app.request(
+      "/api/admin/bootstrap",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "long-password-123" }),
+      },
+      env,
+    );
+    expect(first.status).toBe(200);
+    const second = await app.request(
+      "/api/admin/bootstrap",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "attacker", password: "attacker-password-1" }),
+      },
+      env,
+    );
+    expect(second.status).toBe(409);
+    // The original admin still authenticates.
+    const login = await app.request(
+      "/api/admin/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "long-password-123" }),
+      },
+      env,
+    );
+    expect(login.status).toBe(200);
+  });
+
+  it("adds security headers including CSP", async () => {
+    const res = await app.request("/api/agents", {}, env);
+    expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
   });
 });

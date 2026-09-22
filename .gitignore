@@ -19,7 +19,6 @@ coverage/
 # Env & secrets (never commit)
 .env
 .env.*
-!.env.example
 keys.encrypted
 
 # OS / editor

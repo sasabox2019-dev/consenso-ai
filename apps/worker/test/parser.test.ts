@@ -77,3 +77,57 @@ describe("extractAgentOutput", () => {
     expect(extractAgentOutput("   ").ok).toBe(false);
   });
 });
+
+describe("regression: audit parser fixes", () => {
+  it("preserves code fences INSIDE the answer (only strips a wrapping fence)", () => {
+    const inner = "Aquí va código:\\n```python\\nprint('hola')\\n```\\nFin.";
+    const payload = JSON.stringify({
+      agent_id: "A",
+      confidence: 80,
+      answer: inner,
+      key_points: [],
+      concerns: [],
+      agree_with: [],
+    });
+    const r = extractAgentOutput(`\`\`\`json\\n${payload}\\n\`\`\``);
+    expect(r.ok).toBe(true);
+    if (r.ok && !r.usedFallback) {
+      expect(r.data.answer).toContain("```python");
+    } else {
+      throw new Error("should have parsed as JSON");
+    }
+  });
+
+  it("still parses pretty-printed JSON (newlines between tokens)", () => {
+    const pretty =
+      '{\\n  "agent_id": "A",\\n  "confidence": 77,\\n  "answer": "Respuesta completa con líneas internas",\\n  "key_points": [],\\n  "concerns": [],\\n  "agree_with": []\\n}';
+    const r = extractAgentOutput(pretty);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.confidence).toBe(77);
+  });
+
+  it("unescape escape sequences in regex-salvaged answers", () => {
+    const hopeless = '{"answer":"línea 1\\\\nlínea 2","confidence":66}';
+    const r = extractAgentOutput(`texto roto ${hopeless} más texto`);
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.answer).toContain("línea 1\\nlínea 2");
+    }
+  });
+
+  it("no longer injects the magic marker concern in fallback answers", () => {
+    const r = extractAgentOutput(
+      "Respuesta en texto plano sin JSON alguno, suficientemente larga. ".repeat(5),
+    );
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.concerns).not.toContain("respuesta-sin-formato-json");
+  });
+
+  it("keeps apostrophes intact when handling single-quoted JSON", () => {
+    const r = extractAgentOutput("{'answer': \"it's fine to keep\", 'confidence': 70}");
+    expect(r.ok).toBe(true);
+    if (r.ok && !r.usedFallback) {
+      expect(r.data.answer).toContain("it's fine");
+    }
+  });
+});
