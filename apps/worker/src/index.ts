@@ -18,10 +18,10 @@ const CSP =
 
 app.use("*", async (c, next) => {
   // Correlates an HTTP response (and log lines) to a single request.
-  const requestId = crypto.randomUUID();
-  c.set("requestId", requestId);
-  c.header("x-request-id", requestId);
+  // (Header is applied AFTER next(): Hono discards headers queued before.)
+  c.set("requestId", crypto.randomUUID());
   await next();
+  c.header("x-request-id", c.get("requestId"));
   c.header("x-content-type-options", "nosniff");
   c.header("x-frame-options", "DENY");
   c.header("content-security-policy", CSP);
