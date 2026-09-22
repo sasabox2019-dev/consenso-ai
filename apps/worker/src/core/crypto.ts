@@ -32,12 +32,6 @@ export function toHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export function randomHex(byteLength = 32): string {
-  const bytes = new Uint8Array(byteLength);
-  crypto.getRandomValues(bytes);
-  return toHex(bytes);
-}
-
 const PASSWORD_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
 export function generatePassword(length = 20): string {
   const bytes = new Uint8Array(length);
@@ -115,8 +109,6 @@ export async function decryptString(masterKey: string, payload: string): Promise
 /**
  * Pepper derived via HKDF from JWT_SECRET with a dedicated info label, so the
  * pepper is independent from the session-signing use of the same secret.
- * NOTE: changing the derivation (or JWT_SECRET) invalidates stored hashes —
- * delete the admin row and bootstrap again.
  */
 async function passwordPepper(jwtSecret: string): Promise<string> {
   const baseKey = await crypto.subtle.importKey("raw", encoder.encode(jwtSecret), "HKDF", false, [
@@ -135,6 +127,11 @@ async function passwordPepper(jwtSecret: string): Promise<string> {
   return toHex(new Uint8Array(bits));
 }
 
+/** Legacy v1 pepper — kept ONLY to migrate pre-HKDF hashes on login. */
+async function legacyPasswordPepper(jwtSecret: string): Promise<string> {
+  return hmacHex(jwtSecret, "consenso-password-pepper:v1");
+}
+
 export async function hashPassword(
   jwtSecret: string,
   username: string,
@@ -144,12 +141,23 @@ export async function hashPassword(
   return hmacHex(pepper, `admin:${username}:${password}`);
 }
 
+/**
+ * Verifies against the current HKDF pepper, falling back to the legacy v1
+ * pepper so accounts hashed before the migration can still log in.
+ * `needsRehash` tells the caller to transparently upgrade the stored hash.
+ */
 export async function verifyPassword(
   jwtSecret: string,
   username: string,
   password: string,
   storedHash: string,
-): Promise<boolean> {
+): Promise<{ ok: boolean; needsRehash: boolean }> {
   const candidate = await hashPassword(jwtSecret, username, password);
-  return constantTimeEqual(candidate, storedHash);
+  if (constantTimeEqual(candidate, storedHash)) return { ok: true, needsRehash: false };
+  const legacyCandidate = await hmacHex(
+    await legacyPasswordPepper(jwtSecret),
+    `admin:${username}:${password}`,
+  );
+  if (constantTimeEqual(legacyCandidate, storedHash)) return { ok: true, needsRehash: true };
+  return { ok: false, needsRehash: false };
 }

@@ -15,18 +15,24 @@ export const agentKeySchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,31}$/, "lowercase letters, digits, - and _");
 
-/** Agent endpoint URLs must be https (plain http allowed only for loopback/dev mocks). */
+/** Agent endpoint URLs must be https (plain http only for true loopback hosts). */
 export const agentUrlSchema = z
   .string()
   .url()
   .max(500)
-  .refine(
-    (u) =>
-      u.startsWith("https://") ||
-      u.startsWith("http://127.0.0.1") ||
-      u.startsWith("http://localhost"),
-    "must be an https URL (http only for 127.0.0.1/localhost)",
-  );
+  .refine((u) => {
+    try {
+      const parsed = new URL(u);
+      if (parsed.protocol === "https:") return true;
+      // Hostname check (not prefix): "http://localhost.evil.com" is NOT loopback.
+      return (
+        parsed.protocol === "http:" &&
+        (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")
+      );
+    } catch {
+      return false;
+    }
+  }, "must be an https URL (http only for 127.0.0.1/localhost)");
 
 export const agentCreateSchema = z.object({
   key: agentKeySchema,

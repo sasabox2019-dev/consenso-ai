@@ -270,6 +270,11 @@ export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusRes
   }
   emit({ type: "moderation", status: "start" });
   const moderation = await callModerator(moderator, question, moderatorInput, fetcher, signal);
+  // The abort may land DURING the moderator call: without this check a
+  // fallback synthesis would be produced and cached as if it were real.
+  if (signal?.aborted) {
+    throw new ConsensusError("aborted", "Proceso cancelado por el usuario.");
+  }
 
   let consensus: string;
   let moderatorFallback = false;

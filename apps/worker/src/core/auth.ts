@@ -81,8 +81,17 @@ export function sessionCookie(token: string, expiresAt: number, secure = false):
   return parts.join("; ");
 }
 
-export function clearSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
+export function clearSessionCookie(secure = false): string {
+  return [
+    `${SESSION_COOKIE}=`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Strict",
+    secure ? "Secure" : "",
+    "Max-Age=0",
+  ]
+    .filter(Boolean)
+    .join("; ");
 }
 
 export function extractSessionToken(req: Request): string | null {

@@ -10,6 +10,9 @@ export const LIMITS = {
   INDIVIDUAL_WINDOW_S: 60 * 60,
   BOOTSTRAP_MAX: 3,
   BOOTSTRAP_WINDOW_S: 60 * 60,
+  /** Session-status polling (unauthenticated endpoint, so still throttled). */
+  SESSION_MAX: 120,
+  SESSION_WINDOW_S: 15 * 60,
   /** Consensus session cache (per isolate, best-effort cost saver). */
   CACHE_TTL_MS: 10 * 60 * 1000,
   CACHE_MAX_ENTRIES: 30,

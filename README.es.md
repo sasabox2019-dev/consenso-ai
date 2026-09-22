@@ -82,7 +82,7 @@ apps/web           UI React centro de control (se compila dentro del Worker)
 | `npm run dev` | Servidor Node (API + UI compilada) con agentes demo |
 | `npm run dev:web` | Vite con hot reload (proxifica `/api` a :8787) |
 | `npm run build` | Compila la UI en `apps/worker/public` |
-| `npm test` | 54 tests unitarios + integración (app real, LLM mock) |
+| `npm test` | 81 tests unitarios + integración (app real, LLM mock) |
 | `npm run e2e` | Arranca LLM mock + servidor, 30 comprobaciones E2E |
 | `npm run lint` / `lint:fix` | Biome |
 | `npm run deploy` | Build + `wrangler deploy` |

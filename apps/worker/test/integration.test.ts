@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ConsensusResult, StreamEvent } from "@consenso/shared";
 import { beforeEach, describe, expect, it } from "vitest";
+import { resetRateLimitShieldForTests } from "../src/core/db";
 import type { Env } from "../src/env";
 import app from "../src/index";
 import { NodeSqliteD1 } from "../src/node/d1-sqlite";
@@ -143,6 +144,7 @@ async function setupAgents(env: Env): Promise<string> {
 let env: Env;
 
 beforeEach(() => {
+  resetRateLimitShieldForTests();
   env = makeEnv({ mock: mockLLM() });
 });
 
@@ -720,5 +722,76 @@ describe("regression: audit fixes", () => {
     const res = await app.request("/api/agents", {}, env);
     expect(res.headers.get("content-security-policy")).toContain("default-src 'self'");
     expect(res.headers.get("x-frame-options")).toBe("DENY");
+  });
+});
+
+describe("regression: second-audit fixes", () => {
+  it("logs in with a legacy-pepper hash and transparently rehashes", async () => {
+    // Seed an admin row hashed the OLD way (pre-HKDF pepper scheme).
+    const { hmacHex, hashPassword } = await import("../src/core/crypto");
+    const legacyPepper = await hmacHex(
+      "jwt-test-secret-with-enough-length-for-hmac",
+      "consenso-password-pepper:v1",
+    );
+    const legacyHash = await hmacHex(legacyPepper, "admin:admin:old-style-password");
+    await env.DB.prepare(
+      "INSERT INTO admin_user (id, username, password_hash) VALUES (1, 'admin', ?)",
+    )
+      .bind(legacyHash)
+      .run();
+
+    const login = await app.request(
+      "/api/admin/login",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "old-style-password" }),
+      },
+      env,
+    );
+    expect(login.status).toBe(200);
+
+    // The stored hash was upgraded: it now verifies under the CURRENT scheme.
+    const row = await env.DB.prepare("SELECT password_hash FROM admin_user WHERE id = 1").first<{
+      password_hash: string;
+    }>();
+    const check = await hashPassword(
+      "jwt-test-secret-with-enough-length-for-hmac",
+      "admin",
+      "old-style-password",
+    );
+    expect(row?.password_hash).toBe(check);
+  });
+
+  it("rejects chunked transfer-encoding with 411", async () => {
+    await setupAgents(env);
+    const res = await app.request(
+      "/api/consensus",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "transfer-encoding": "chunked" },
+        body: JSON.stringify({
+          question: "Pregunta sin content-length aquí",
+          selected_agents: ["a", "b", "c"],
+        }),
+      },
+      env,
+    );
+    expect(res.status).toBe(411);
+  });
+
+  it("throttles /api/admin/session polling", async () => {
+    await setupAgents(env);
+    // Fire SESSION_MAX+ requests from the same (shared "unknown") IP.
+    let last = 0;
+    for (let i = 0; i <= 130; i++) {
+      const r = await app.request(
+        "/api/admin/session",
+        { headers: { cookie: "consenso_session=whatever" } },
+        env,
+      );
+      last = r.status;
+    }
+    expect(last).toBe(429);
   });
 });

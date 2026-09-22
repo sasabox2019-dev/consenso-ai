@@ -26,7 +26,6 @@ import {
   constantTimeEqual,
   decryptString,
   encryptString,
-  generatePassword,
   hashPassword,
   verifyPassword,
 } from "../core/crypto";
@@ -141,7 +140,8 @@ adminRoutes.post("/api/admin/bootstrap", async (c) => {
 // ---------------------------------------------------------------------------
 
 adminRoutes.post("/api/admin/login", async (c) => {
-  if (!c.env.JWT_SECRET) {
+  const jwtSecret = c.env.JWT_SECRET;
+  if (!jwtSecret) {
     return jsonError(c, 503, "not_configured", "Sistema sin configurar (falta JWT_SECRET).");
   }
   const ip = clientIp(c.req.raw);
@@ -160,11 +160,16 @@ adminRoutes.post("/api/admin/login", async (c) => {
   const { username, password } = parsed.data;
 
   const admin = await getAdmin(c.env.DB);
-  const ok =
-    admin !== null &&
-    admin.username === username &&
-    (await verifyPassword(c.env.JWT_SECRET, admin.username, password, admin.password_hash));
-  if (!ok) {
+  const verification =
+    admin !== null && admin.username === username
+      ? await verifyPassword(jwtSecret, admin.username, password, admin.password_hash)
+      : await (async () => {
+          // Constant-work path: unknown usernames cost the same as wrong
+          // passwords, so response timing can't enumerate the admin name.
+          await hashPassword(jwtSecret, username, password);
+          return { ok: false, needsRehash: false };
+        })();
+  if (!verification.ok || admin === null || admin.username !== username) {
     // Only failures consume the per-user lockout budget, so an attacker can't
     // permanently lock the (single) admin by spraying a wrong password.
     const userVerdict = await rateLimit(
@@ -185,8 +190,17 @@ adminRoutes.post("/api/admin/login", async (c) => {
     return jsonError(c, 401, "invalid_credentials", "Credenciales incorrectas.");
   }
 
+  // Transparent migration: upgrade a legacy-pepper hash to the current scheme.
+  if (verification.needsRehash) {
+    await updateAdminPassword(
+      c.env.DB,
+      admin.username,
+      await hashPassword(jwtSecret, admin.username, password),
+    );
+  }
+
   const { token, expiresAt } = await signSession(
-    c.env.JWT_SECRET,
+    jwtSecret,
     admin.username,
     await getSessionVersion(c.env.DB),
   );
@@ -200,7 +214,7 @@ adminRoutes.post("/api/admin/logout", async (c) => {
   // cookie handles this browser.
   await bumpSessionVersion(c.env.DB);
   await audit(c.env.DB, user(c), "logout", null, null);
-  c.header("set-cookie", clearSessionCookie());
+  c.header("set-cookie", clearSessionCookie(isSecure(c)));
   return c.json({ success: true });
 });
 
@@ -213,6 +227,18 @@ adminRoutes.get("/api/admin/session", async (c) => {
       authenticated: false,
       needs_bootstrap: (await getAdmin(c.env.DB)) === null,
     });
+  // Throttled even though it's "just a status check": the HMAC verification
+  // would otherwise be an unauthenticated online-guessing oracle for a weak
+  // JWT_SECRET, and each call costs a D1 read.
+  const verdict = await rateLimit(
+    c.env.DB,
+    `session:${clientIp(c.req.raw)}`,
+    LIMITS.SESSION_MAX,
+    LIMITS.SESSION_WINDOW_S,
+  );
+  if (!verdict.allowed) {
+    return jsonError(c, 429, "rate_limited", "Demasiadas comprobaciones de sesión.");
+  }
   // Same revocation semantics as the guard: a logged-out token must report
   // unauthenticated here too, not just fail on real endpoints.
   const userSession = await verifySession(secret, token, await getSessionVersion(c.env.DB));
@@ -263,7 +289,18 @@ adminRoutes.post("/api/admin/agents", async (c) => {
     return jsonError(c, 503, "not_configured", "Falta MASTER_KEY para cifrar la API key.");
   }
 
-  const ciphertext = await encryptString(c.env.MASTER_KEY, input.api_key);
+  let ciphertext: string;
+  try {
+    ciphertext = await encryptString(c.env.MASTER_KEY, input.api_key);
+  } catch {
+    // Weak MASTER_KEY throws at key derivation — fail loudly, not with a 500.
+    return jsonError(
+      c,
+      503,
+      "master_key_invalid",
+      "MASTER_KEY inválida o demasiado corta (usa `openssl rand -hex 32`).",
+    );
+  }
   await createAgent(c.env.DB, {
     key: input.key,
     name: input.name,
@@ -320,7 +357,16 @@ adminRoutes.put("/api/admin/agents/:key", async (c) => {
     if (!c.env.MASTER_KEY) {
       return jsonError(c, 503, "not_configured", "Falta MASTER_KEY para cifrar la API key.");
     }
-    fields.api_key_ciphertext = await encryptString(c.env.MASTER_KEY, input.api_key);
+    try {
+      fields.api_key_ciphertext = await encryptString(c.env.MASTER_KEY, input.api_key);
+    } catch {
+      return jsonError(
+        c,
+        503,
+        "master_key_invalid",
+        "MASTER_KEY inválida o demasiado corta (usa `openssl rand -hex 32`).",
+      );
+    }
   }
   if (Object.keys(fields).length === 0) {
     return jsonError(c, 400, "empty_update", "No hay campos que actualizar.");
@@ -419,7 +465,7 @@ adminRoutes.post("/api/admin/agents/:key/test", async (c) => {
     messages: [{ role: "user", content: buildTestUserPrompt() }],
     temperature: 0,
     maxTokens: 10,
-    timeoutS: 15,
+    timeoutS: row.timeout_s, // honor the agent's configured timeout
     retries: 0,
     fetcher: c.env.LLM_FETCHER,
   });
@@ -468,10 +514,11 @@ adminRoutes.post("/api/admin/password", async (c) => {
   }
   const { current_password: current, new_password: next } = parsed.data;
   const admin = await getAdmin(c.env.DB);
-  if (
-    !admin ||
-    !(await verifyPassword(c.env.JWT_SECRET, admin.username, current, admin.password_hash))
-  ) {
+  const verification =
+    admin !== null
+      ? await verifyPassword(c.env.JWT_SECRET, admin.username, current, admin.password_hash)
+      : { ok: false, needsRehash: false };
+  if (!admin || !verification.ok) {
     return jsonError(c, 401, "invalid_credentials", "Contraseña actual incorrecta.");
   }
   const hash = await hashPassword(c.env.JWT_SECRET, admin.username, next);
@@ -483,5 +530,3 @@ adminRoutes.post("/api/admin/password", async (c) => {
   c.header("set-cookie", sessionCookie(token, expiresAt, isSecure(c)));
   return c.json({ success: true });
 });
-
-export { generatePassword };

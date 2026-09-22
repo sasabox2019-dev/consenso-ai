@@ -5,6 +5,7 @@ import {
   encryptString,
   generatePassword,
   hashPassword,
+  hmacHex,
   verifyPassword,
 } from "../src/core/crypto";
 
@@ -36,9 +37,11 @@ describe("crypto", () => {
 
   it("verifies password hashes correctly", async () => {
     const hash = await hashPassword("jwt-secret", "admin", "correct horse");
-    expect(await verifyPassword("jwt-secret", "admin", "correct horse", hash)).toBe(true);
-    expect(await verifyPassword("jwt-secret", "admin", "wrong", hash)).toBe(false);
-    expect(await verifyPassword("jwt-secret", "other-user", "correct horse", hash)).toBe(false);
+    expect((await verifyPassword("jwt-secret", "admin", "correct horse", hash)).ok).toBe(true);
+    expect((await verifyPassword("jwt-secret", "admin", "wrong", hash)).ok).toBe(false);
+    expect((await verifyPassword("jwt-secret", "other-user", "correct horse", hash)).ok).toBe(
+      false,
+    );
   });
 
   it("hashes are deterministic per (secret, user, password) but differ across users/secrets", async () => {
@@ -75,5 +78,26 @@ describe("regression: master key strength", () => {
     const mk = "a".repeat(32);
     const ct = await encryptString(mk, "secret");
     expect(await decryptString(mk, ct)).toBe("secret");
+  });
+});
+
+describe("regression: legacy pepper migration", () => {
+  it("verifies legacy-pepper hashes and flags needsRehash", async () => {
+    const secret = "jwt-secret-for-legacy-test-0123456789";
+    const username = "admin";
+    const password = "legacy-password-123";
+    // Hash the way the pre-HKDF scheme did.
+    const legacyPepper = await hmacHex(secret, "consenso-password-pepper:v1");
+    const legacyHash = await hmacHex(legacyPepper, `admin:${username}:${password}`);
+    const result = await verifyPassword(secret, username, password, legacyHash);
+    expect(result.ok).toBe(true);
+    expect(result.needsRehash).toBe(true);
+    // Current-scheme hash reports no rehash need.
+    const fresh = await hashPassword(secret, username, password);
+    const current = await verifyPassword(secret, username, password, fresh);
+    expect(current.ok).toBe(true);
+    expect(current.needsRehash).toBe(false);
+    // Wrong password fails either way.
+    expect((await verifyPassword(secret, username, "wrong", legacyHash)).ok).toBe(false);
   });
 });

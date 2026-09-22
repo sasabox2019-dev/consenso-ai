@@ -10,7 +10,7 @@ import { jsonError, toPublicAgent, toRuntimeAgent } from "../core/helpers";
 import type { Env } from "../env";
 import { clientIp } from "../env";
 
-export const publicRoutes = new Hono<{ Bindings: Env }>();
+export const publicRoutes = new Hono<{ Bindings: Env; Variables: { requestId: string } }>();
 
 // ---------------------------------------------------------------------------
 // GET /api/agents — public, read-only, no secrets
@@ -134,6 +134,16 @@ publicRoutes.post("/api/consensus", async (c) => {
           /* client gone — events are dropped, work continues to cancellation */
         }
       };
+      // Heartbeat: silent stretches between LLM calls can last minutes, and
+      // idle proxies (60-300s) would sever the stream. SSE comment lines are
+      // ignored by every client parser but keep the connection alive.
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(enc.encode(": ping\n\n"));
+        } catch {
+          /* client gone */
+        }
+      }, 15_000);
       emit({ type: "status", stage: "start", message: "start" });
       try {
         const result = await runConsensus({
@@ -144,16 +154,19 @@ publicRoutes.post("/api/consensus", async (c) => {
           fetcher,
           signal: abort.signal,
         });
-        cachePut(key, result);
+        // Never cache a run that was cancelled mid-flight (e.g. an abort
+        // landing during moderation would otherwise cache a fallback result).
+        if (!abort.signal.aborted) cachePut(key, result);
         emit({ type: "final", result });
       } catch (e) {
         if (e instanceof ConsensusError) {
           emit({ type: "error", code: e.code, message: e.message });
         } else {
-          console.error("consensus failure", e);
+          console.error(`[${c.get("requestId")}] consensus failure`, e);
           emit({ type: "error", code: "internal", message: "Error interno del sistema." });
         }
       } finally {
+        clearInterval(heartbeat);
         try {
           controller.close();
         } catch {
@@ -217,7 +230,10 @@ publicRoutes.post("/api/individual", async (c) => {
   }
 
   const abort = new AbortController();
-  c.req.raw.signal.addEventListener("abort", () => abort.abort(), { once: true });
+  // If the client already left during the awaits above, an abort event never
+  // fires again — check directly before wiring the listener.
+  if (c.req.raw.signal.aborted) abort.abort();
+  else c.req.raw.signal.addEventListener("abort", () => abort.abort(), { once: true });
   const started = Date.now();
   try {
     const out = await runIndividual({
@@ -243,7 +259,7 @@ publicRoutes.post("/api/individual", async (c) => {
     if (e instanceof ConsensusError) {
       return jsonError(c, 502, e.code, e.message);
     }
-    console.error("individual failure", e);
+    console.error(`[${c.get("requestId")}] individual failure`, e);
     return jsonError(c, 500, "internal", "Error interno del sistema.");
   }
 });
@@ -262,6 +278,7 @@ publicRoutes.get("/health", async (c) => {
     moderator_active: rows.some((r) => r.active && r.role === "moderator"),
     secrets_configured: {
       master_key: Boolean(c.env.MASTER_KEY),
+      master_key_strong: Boolean(c.env.MASTER_KEY && c.env.MASTER_KEY.length >= 32),
       jwt_secret: Boolean(c.env.JWT_SECRET),
     },
   });

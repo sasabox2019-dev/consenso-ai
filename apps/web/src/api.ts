@@ -67,8 +67,12 @@ export async function streamConsensus(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // A CRLF pair split across two reads leaves a stray "\r"; hold it back so
+    // the delimiter is seen on the next read instead of being missed.
+    if (buffer.endsWith("\r")) continue;
     // Normalize CRLF so proxy-rewritten streams still parse.
-    buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    buffer = buffer.replace(/\r\n/g, "\n");
     let sep = buffer.indexOf("\n\n");
     while (sep !== -1) {
       const chunk = buffer.slice(0, sep);
@@ -87,11 +91,15 @@ export async function streamConsensus(
   }
 }
 
-export async function askIndividual(req: IndividualRequest): Promise<IndividualResult> {
+export async function askIndividual(
+  req: IndividualRequest,
+  signal?: AbortSignal,
+): Promise<IndividualResult> {
   const res = await fetch("/api/individual", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(req),
+    signal,
   });
   // Read the body exactly once: parseError consumes it on failures.
   if (!res.ok) throw await parseError(res);

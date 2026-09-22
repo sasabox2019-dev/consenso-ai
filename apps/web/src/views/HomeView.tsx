@@ -39,6 +39,7 @@ export default function HomeView() {
   const [showProcess, setShowProcess] = useState(false);
   const [stopped, setStopped] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  const individualAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     fetchAgents()
@@ -49,8 +50,11 @@ export default function HomeView() {
         setIndividualAgent(p.participants.find((a) => a.has_api_key)?.key ?? "");
       })
       .catch((e) => setLoadError(e instanceof ApiError ? e.message : String(e)));
-    // Cancel any in-flight stream when leaving the view.
-    return () => abortRef.current?.abort();
+    // Cancel any in-flight request when leaving the view.
+    return () => {
+      abortRef.current?.abort();
+      individualAbortRef.current?.abort();
+    };
   }, []);
 
   const toggleAgent = (key: string) => {
@@ -64,6 +68,8 @@ export default function HomeView() {
   const reset = () => {
     abortRef.current?.abort();
     abortRef.current = null;
+    individualAbortRef.current?.abort();
+    individualAbortRef.current = null;
     setRun(emptyRun());
     setResult(null);
     setIndividualResult(null);
@@ -135,9 +141,11 @@ export default function HomeView() {
         controller.signal,
       );
     } catch (e) {
-      if (e instanceof DOMException && e.name === "AbortError") {
+      // Only report "stopped" for user-initiated aborts of THIS run — not for
+      // unmount cleanups (which abort via reset() with a cleared ref).
+      if (abortRef.current === controller && e instanceof DOMException && e.name === "AbortError") {
         setStopped(true); // keep the partial progress visible with a neutral note
-      } else {
+      } else if (!(e instanceof DOMException && e.name === "AbortError")) {
         setRun((prev) => ({
           ...prev,
           error: { code: "network", message: e instanceof ApiError ? e.message : String(e) },
@@ -145,7 +153,7 @@ export default function HomeView() {
       }
     } finally {
       setRunning(false);
-      abortRef.current = null;
+      if (abortRef.current === controller) abortRef.current = null;
     }
   };
 
@@ -159,16 +167,24 @@ export default function HomeView() {
     if (!individualAgent) return;
     reset();
     setIndividualBusy(true);
+    const controller = new AbortController();
+    individualAbortRef.current = controller;
     try {
-      const r = await askIndividual({ question: question.trim(), agent: individualAgent });
+      const r = await askIndividual(
+        { question: question.trim(), agent: individualAgent },
+        controller.signal,
+      );
       setIndividualResult(r);
     } catch (e) {
-      setRun((prev) => ({
-        ...prev,
-        error: { code: "network", message: e instanceof ApiError ? e.message : String(e) },
-      }));
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        setRun((prev) => ({
+          ...prev,
+          error: { code: "network", message: e instanceof ApiError ? e.message : String(e) },
+        }));
+      }
     } finally {
       setIndividualBusy(false);
+      if (individualAbortRef.current === controller) individualAbortRef.current = null;
     }
   };
 
@@ -189,7 +205,7 @@ export default function HomeView() {
           <button
             type="button"
             key={m}
-            disabled={running}
+            disabled={running || individualBusy}
             onClick={() => {
               setMode(m);
               reset();

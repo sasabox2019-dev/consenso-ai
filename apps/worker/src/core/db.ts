@@ -169,16 +169,6 @@ export async function getSetting(db: D1Database, key: string): Promise<string | 
   return row?.value ?? null;
 }
 
-export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
-  await db
-    .prepare(
-      `INSERT INTO settings (key, value) VALUES (?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-    )
-    .bind(key, value)
-    .run();
-}
-
 /** Current session version: bumping it invalidates every outstanding token. */
 export async function getSessionVersion(db: D1Database): Promise<number> {
   const v = await getSetting(db, "session_ver");
@@ -186,11 +176,12 @@ export async function getSessionVersion(db: D1Database): Promise<number> {
 }
 
 export async function bumpSessionVersion(db: D1Database): Promise<number> {
-  // Atomic increment: concurrent logouts can't lose a revocation.
+  // Atomic increment: concurrent logouts can't lose a revocation. MAX guards
+  // against a corrupted non-numeric stored value resetting the version to 1.
   const row = await db
     .prepare(
       `INSERT INTO settings (key, value) VALUES ('session_ver', '2')
-       ON CONFLICT(key) DO UPDATE SET value = CAST(settings.value AS INTEGER) + 1
+       ON CONFLICT(key) DO UPDATE SET value = MAX(CAST(settings.value AS INTEGER), 1) + 1
        RETURNING value`,
     )
     .first<{ value: string }>();
@@ -230,7 +221,23 @@ export async function recentAudit(db: D1Database, limit = 100): Promise<AuditRow
 
 // ---------------------------------------------------------------------------
 // Rate limiting — atomic fixed-window counter (upsert + RETURNING)
+// with an in-isolate shield in front of D1.
+//
+// The shield exists because every limiter call is itself a D1 WRITE: a flood
+// would otherwise exhaust the free tier's 100k writes/day through the very
+// guard meant to protect the API. Once a bucket has visibly hit its cap in
+// this isolate, further requests are rejected locally without touching D1.
+// Isolate-local state may lag the authoritative D1 count across isolates —
+// acceptable for a best-effort shield (D1 remains the source of truth).
 // ---------------------------------------------------------------------------
+
+const shield = new Map<string, number>();
+const SHIELD_MAX_ENTRIES = 5000;
+
+/** Test hook: each test expects a fresh D1, so the isolate shield must reset too. */
+export function resetRateLimitShieldForTests(): void {
+  shield.clear();
+}
 
 export interface RateVerdict {
   allowed: boolean;
@@ -245,6 +252,14 @@ export async function rateLimit(
 ): Promise<RateVerdict> {
   const now = Math.floor(Date.now() / 1000);
   const windowStart = Math.floor(now / windowS) * windowS;
+  const shieldKey = `${bucket}|${windowStart}`;
+  const localCount = shield.get(shieldKey) ?? 0;
+
+  // Cheap rejection: this isolate has already seen this bucket hit its cap.
+  if (localCount >= max) {
+    return { allowed: false, count: localCount + 1 };
+  }
+
   const row = await db
     .prepare(
       `INSERT INTO rate_limits (bucket, window_start, count) VALUES (?, ?, 1)
@@ -257,6 +272,14 @@ export async function rateLimit(
     .bind(bucket, windowStart)
     .first<{ count: number }>();
   const count = row?.count ?? 1;
+  shield.set(shieldKey, count);
+  if (shield.size > SHIELD_MAX_ENTRIES) {
+    // Drop the oldest entries (insertion order) to stay bounded.
+    for (const key of shield.keys()) {
+      shield.delete(key);
+      if (shield.size <= SHIELD_MAX_ENTRIES) break;
+    }
+  }
 
   // Opportunistic housekeeping (~1% of calls).
   if (Math.random() < 0.01) {

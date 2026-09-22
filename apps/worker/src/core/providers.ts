@@ -167,20 +167,28 @@ export async function callChatCompletion(args: LLMCallArgs): Promise<LLMCallResu
         break; // non-retryable HTTP error (e.g. 401/403/404)
       }
     } catch (e) {
-      const isAbort = e instanceof Error && (e.name === "AbortError" || e.name === "TimeoutError");
-      lastError = isAbort
+      const isTimeout = e instanceof Error && e.name === "TimeoutError";
+      const isAbort = e instanceof Error && (e.name === "AbortError" || isTimeout);
+      lastError = isTimeout
         ? {
             type: "timeout",
             status: 408,
             message: `Sin respuesta en ${args.timeoutS}s`,
             detail: "La API no respondió dentro del timeout configurado",
           }
-        : {
-            type: "connection_error",
-            status: 0,
-            message: "Error de conexión con la API",
-            detail: String(e).slice(0, 300),
-          };
+        : isAbort
+          ? {
+              type: "timeout",
+              status: 499,
+              message: "Llamada cancelada",
+              detail: "El cliente abortó la petición",
+            }
+          : {
+              type: "connection_error",
+              status: 0,
+              message: "Error de conexión con la API",
+              detail: String(e).slice(0, 300),
+            };
       // A timeout already consumed the full budget and a client abort means
       // nobody is listening — never burn another attempt on either.
       if (isAbort) break;

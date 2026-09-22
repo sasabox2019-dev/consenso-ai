@@ -34,7 +34,7 @@ Anything can fail safely: a provider that errors or lacks a key is reported as *
 
 ## Stack
 
-TypeScript end to end · Hono (API) · React + Vite + Tailwind (UI) · Cloudflare Workers + D1 (hosting/DB) · Vitest (54 tests) + scripted E2E (30 checks) · Biome · GitHub Actions.
+TypeScript end to end · Hono (API) · React + Vite + Tailwind (UI) · Cloudflare Workers + D1 (hosting/DB) · Vitest (81 tests) + scripted E2E (30 checks) · Biome · GitHub Actions.
 
 > **Local development on macOS ≤ 13.4**: the Workers runtime (workerd) does not run there, so this repo ships an equivalent local runtime: the same Hono app served over Node with a `node:sqlite` D1 shim. Tests and E2E run on it; production deploys the identical code to Cloudflare.
 
@@ -82,7 +82,7 @@ apps/web           React mission-control UI (builds into the Worker)
 | `npm run dev` | Node dev server (API + built UI) with seeded demo agents |
 | `npm run dev:web` | Vite dev server with hot reload (proxies `/api` to :8787) |
 | `npm run build` | Build the UI into `apps/worker/public` |
-| `npm test` | 54 unit + integration tests (real app, mocked LLM) |
+| `npm test` | 81 unit + integration tests (real app, mocked LLM) |
 | `npm run e2e` | Boots mock LLM + server, runs 30 end-to-end checks |
 | `npm run lint` / `lint:fix` | Biome |
 | `npm run deploy` | Build + `wrangler deploy` |

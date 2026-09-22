@@ -7,16 +7,20 @@ import type { Env } from "./env";
 import { adminRoutes } from "./routes/admin";
 import { publicRoutes } from "./routes/public";
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: { requestId: string } }>();
 
 // ---------------------------------------------------------------------------
-// Security headers on every response
+// Security headers on every response + request correlation
 // ---------------------------------------------------------------------------
 
 const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'";
 
 app.use("*", async (c, next) => {
+  // Correlates an HTTP response (and log lines) to a single request.
+  const requestId = crypto.randomUUID();
+  c.set("requestId", requestId);
+  c.header("x-request-id", requestId);
   await next();
   c.header("x-content-type-options", "nosniff");
   c.header("x-frame-options", "DENY");
@@ -28,17 +32,36 @@ app.use("*", async (c, next) => {
   }
 });
 
-// Never cache API responses; reject oversized bodies before any parsing.
+// API hygiene: never cache responses; reject the two body-size bypass paths —
+// chunked transfer-encoding (no length at all) and oversized declared bodies.
 app.use("/api/*", async (c, next) => {
-  const contentLength = Number(c.req.header("content-length") ?? "0");
-  if (contentLength > 10_000) {
-    return c.json(
-      { success: false, error: { code: "payload_too_large", message: "Cuerpo demasiado grande." } },
-      413,
-    );
+  const method = c.req.method;
+  if (method !== "GET" && method !== "HEAD") {
+    const contentLength = c.req.header("content-length");
+    if (c.req.header("transfer-encoding") !== undefined) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "length_required", message: "Transfer-encoding no soportado." },
+        },
+        411,
+      );
+    }
+    if (contentLength !== undefined && Number(contentLength) > 10_000) {
+      return c.json(
+        {
+          success: false,
+          error: { code: "payload_too_large", message: "Cuerpo demasiado grande." },
+        },
+        413,
+      );
+    }
   }
   await next();
-  c.header("cache-control", "no-store");
+  // Don't clobber SSE's `no-cache, no-transform` with plain `no-store`.
+  if (!c.res.headers.has("cache-control")) {
+    c.header("cache-control", "no-store");
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -62,9 +85,12 @@ app.notFound(async (c) => {
 });
 
 app.onError((err, c) => {
-  console.error("unhandled error", err);
+  console.error(`[${c.get("requestId")}] unhandled error`, err);
   return c.json(
-    { success: false, error: { code: "internal", message: "Error interno del sistema." } },
+    {
+      success: false,
+      error: { code: "internal", message: "Error interno del sistema." },
+    },
     500,
   );
 });

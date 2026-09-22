@@ -1,0 +1,10 @@
+# Security headers for statically-served SPA files (applied by the Cloudflare
+# assets layer in production — the Worker middleware can't see those requests).
+# Kept in apps/web/public/ so Vite copies it into the Worker's asset directory.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'
+  Referrer-Policy: no-referrer
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains

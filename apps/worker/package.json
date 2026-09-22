@@ -14,8 +14,7 @@
   },
   "dependencies": {
     "@consenso/shared": "2.0.0",
-    "hono": "^4.6.16",
-    "zod": "^3.24.1"
+    "hono": "^4.6.16"
   },
   "devDependencies": {
     "@hono/node-server": "^1.13.7",

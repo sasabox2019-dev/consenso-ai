@@ -8,22 +8,31 @@ import { type AgentOutput, agentOutputSchema } from "@consenso/shared";
 /**
  * Strips a code fence only when it WRAPS the whole payload. Fences that appear
  * inside the answer (e.g. a coding question whose answer contains ``` blocks)
- * must survive untouched.
+ * must survive untouched — ambiguous payloads are left as-is, because the
+ * JSON extraction (first "{" … last "}") handles prose-wrapped payloads anyway.
  */
 function stripWrappingFence(text: string): string {
   const trimmed = text.trim();
-  const wrapped = trimmed.match(/^```[a-zA-Z0-9_-]*\s*\n([\s\S]*?)\n?```\s*$/);
-  if (wrapped?.[1] !== undefined) return wrapped[1].trim();
-  // Also handle the common "```json\n{...}\n```" without trailing newline.
+  // Path 1: "```lang\n…\n```" (newline after the language tag).
+  const wrapped = trimmed.match(/^```[a-zA-Z0-9_-]*[ \t]*\n([\s\S]*?)\n?[ \t]*```$/);
+  if (wrapped?.[1] !== undefined && !wrapped[1].includes("```")) return wrapped[1].trim();
+  // Path 2: starts and ends with fences but no newline after the language —
+  // "```json{…}\n```". Only strip when what follows "```" is a bare language
+  // tag; otherwise the payload is ambiguous (multiple code blocks) and any
+  // slicing would corrupt it.
   if (trimmed.startsWith("```") && trimmed.endsWith("```")) {
     const inner = trimmed.slice(3, -3);
     const firstNewline = inner.indexOf("\n");
-    return (firstNewline === -1 ? inner : inner.slice(firstNewline + 1)).trim();
+    const head = firstNewline === -1 ? inner : inner.slice(0, firstNewline);
+    if (/^[a-zA-Z0-9_-]*$/.test(head)) {
+      const body = firstNewline === -1 ? "" : inner.slice(firstNewline + 1);
+      if (!body.includes("```")) return body.trim();
+    }
   }
   return trimmed;
 }
 
-/** Escapes raw control characters ONLY inside JSON string literals. */
+/** Escapes ALL raw control characters (C0) inside JSON string literals. */
 function escapeControlsInStrings(candidate: string): string {
   let out = "";
   let inString = false;
@@ -44,8 +53,16 @@ function escapeControlsInStrings(candidate: string): string {
       out += ch;
       continue;
     }
-    if (inString && (ch === "\n" || ch === "\r" || ch === "\t")) {
-      out += ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : "\\t";
+    const code = ch.charCodeAt(0);
+    if (inString && code < 0x20) {
+      out +=
+        ch === "\n"
+          ? "\\n"
+          : ch === "\r"
+            ? "\\r"
+            : ch === "\t"
+              ? "\\t"
+              : `\\u${code.toString(16).padStart(4, "0")}`;
       continue;
     }
     out += ch;
@@ -76,9 +93,10 @@ function singleToDoubleQuotes(candidate: string): string {
         out += '"';
         continue;
       }
-      // An apostrophe inside a double-quoted string is content, not a delimiter.
-      if (ch === "'" && stringChar === '"') {
-        out += ch;
+      // Inside the new double-quoted string, both apostrophes (content) and
+      // previously-unescaped double quotes must be escaped to stay valid JSON.
+      if (stringChar === "'" && ch === '"') {
+        out += '\\"';
         continue;
       }
       out += ch;

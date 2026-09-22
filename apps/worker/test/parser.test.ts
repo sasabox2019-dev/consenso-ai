@@ -131,3 +131,52 @@ describe("regression: audit parser fixes", () => {
     }
   });
 });
+
+describe("regression: second-audit parser fixes", () => {
+  it("parses a fence with language but NO newline after it (was: destroyed payload)", () => {
+    const payload = JSON.stringify({
+      agent_id: "A",
+      confidence: 80,
+      answer: "respuesta válida",
+      key_points: [],
+      concerns: [],
+      agree_with: [],
+    });
+    const r = extractAgentOutput(`\`\`\`json${payload}\n\`\`\``);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.data.answer).toBe("respuesta válida");
+  });
+
+  it("leaves multi-codeblock payloads untouched (no mangling)", () => {
+    const multi = "```\nA\n```\ntext\n```\nB\n```";
+    const r = extractAgentOutput(multi);
+    expect(r.ok).toBe(true);
+    if (r.ok && r.usedFallback) {
+      expect(r.data.answer).toContain("A\n```\ntext\n```\nB");
+    } else {
+      throw new Error("should be raw fallback, not mangled parse");
+    }
+  });
+
+  it("escapes ALL control characters inside strings (NUL etc.), not just \\n\\r\\t", () => {
+    const payload =
+      '{"agent_id":"A","confidence":80,"answer":"a\u0000b","key_points":[],"concerns":[],"agree_with":[]}';
+    const r = extractAgentOutput(payload);
+    expect(r.ok).toBe(true);
+    if (r.ok && !r.usedFallback) {
+      expect(r.data.answer).toContain("a");
+      expect(r.data.answer).toContain("b");
+    } else {
+      throw new Error("control-char sanitization failed");
+    }
+  });
+
+  it("survives unescaped double quotes inside single-quoted JSON", () => {
+    const r = extractAgentOutput("{'answer': 'say \"hi\" now please', 'confidence': 70}");
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.data.answer).toContain("hi");
+      expect(r.data.answer).toContain("now please");
+    }
+  });
+});

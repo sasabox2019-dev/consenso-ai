@@ -200,11 +200,6 @@ export function LangProvider({ children }: { children: ReactNode }) {
     return navigator.language.toLowerCase().startsWith("en") ? "en" : "es";
   });
 
-  const setLang = (l: Lang) => {
-    setLangState(l);
-    localStorage.setItem(STORAGE_KEY, l);
-  };
-
   useEffect(() => {
     document.documentElement.lang = lang;
   }, [lang]);
@@ -213,10 +208,13 @@ export function LangProvider({ children }: { children: ReactNode }) {
   const value = useMemo(
     () => ({
       lang,
-      setLang,
+      setLang: (l: Lang) => {
+        setLangState(l);
+        localStorage.setItem(STORAGE_KEY, l);
+      },
       t: (k: DictKey) => dict[lang][k] ?? dict.es[k],
     }),
-    [lang, setLang],
+    [lang],
   );
   return createElement(LangCtx.Provider, { value }, children);
 }
