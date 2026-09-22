@@ -43,6 +43,10 @@ export const agentCreateSchema = z.object({
   api_key: z.string().trim().min(8).max(500),
   timeout_s: z.number().int().min(5).max(120).default(45),
   role: z.enum(AGENT_ROLES).default("participant"),
+  /** Ask the provider for JSON mode (response_format) — where supported. */
+  structured_outputs: z.boolean().default(false),
+  /** OpenAI reasoning models reject max_tokens; send max_completion_tokens instead. */
+  use_max_completion_tokens: z.boolean().default(false),
 });
 export type AgentCreateInput = z.infer<typeof agentCreateSchema>;
 
@@ -55,6 +59,8 @@ export const agentUpdateSchema = z.object({
   timeout_s: z.number().int().min(5).max(120).optional(),
   role: z.enum(AGENT_ROLES).optional(),
   active: z.boolean().optional(),
+  structured_outputs: z.boolean().optional(),
+  use_max_completion_tokens: z.boolean().optional(),
 });
 export type AgentUpdateInput = z.infer<typeof agentUpdateSchema>;
 
@@ -73,6 +79,8 @@ export interface AdminAgent extends PublicAgent {
   url: string;
   timeout_s: number;
   active: boolean;
+  structured_outputs: boolean;
+  use_max_completion_tokens: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,12 +89,20 @@ export interface AdminAgent extends PublicAgent {
 
 export const questionSchema = z.string().trim().min(10).max(1000);
 
+/** Consensus topology bounds. */
+export const MIN_PARTICIPANTS = 2;
+export const MAX_PARTICIPANTS = 5;
+export const MIN_ROUNDS = 2;
+export const MAX_ROUNDS = 3;
+
 export const consensusRequestSchema = z.object({
   question: questionSchema,
   selected_agents: z
     .array(agentKeySchema)
-    .length(3)
+    .min(MIN_PARTICIPANTS)
+    .max(MAX_PARTICIPANTS)
     .refine((keys) => new Set(keys).size === keys.length, "agents must be unique"),
+  rounds: z.number().int().min(MIN_ROUNDS).max(MAX_ROUNDS).default(MIN_ROUNDS),
 });
 export type ConsensusRequest = z.infer<typeof consensusRequestSchema>;
 
@@ -132,8 +148,8 @@ export type RoundSlot = { status: "ok"; data: RoundAnswer } | { status: "error";
 export interface ParticipantResult {
   key: string;
   display_name: string;
-  rounds: [RoundSlot, RoundSlot];
-  /** True when neither round produced an answer. */
+  rounds: RoundSlot[];
+  /** True when no round produced an answer. */
   unavailable: boolean;
   error: string | null;
 }
@@ -161,13 +177,13 @@ export interface ConsensusResult {
 export type StreamEvent =
   | {
       type: "status";
-      stage: "start" | "round1" | "round2" | "moderation" | "cache";
+      stage: "start" | "moderation" | "cache" | `round${number}`;
       message: string;
     }
-  | { type: "round"; round: 1 | 2; status: "start" | "end" }
+  | { type: "round"; round: number; status: "start" | "end" }
   | {
       type: "agent";
-      round: 1 | 2;
+      round: number;
       agent_key: string;
       display_name: string;
       status: "ok" | "error";

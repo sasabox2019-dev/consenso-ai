@@ -171,6 +171,8 @@ export interface AgentUpsert {
   timeout_s?: number;
   role?: "participant" | "moderator";
   active?: boolean;
+  structured_outputs?: boolean;
+  use_max_completion_tokens?: boolean;
 }
 
 export async function createAgent(input: AgentUpsert): Promise<void> {

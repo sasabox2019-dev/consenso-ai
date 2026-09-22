@@ -18,16 +18,19 @@ interface Props {
   agents: Record<string, AgentRunState>;
   participants: PublicAgent[];
   done: boolean;
+  rounds: number;
 }
 
-const STAGES = [
-  { id: "round1", key: "stage_round1" },
-  { id: "round2", key: "stage_round2" },
-  { id: "moderation", key: "stage_moderation" },
-] as const;
-
-export default function ProgressPanel({ stages, agents, participants, done }: Props) {
+export default function ProgressPanel({ stages, agents, participants, done, rounds }: Props) {
   const { t } = useI18n();
+  const stagesList: Array<{ id: string; label: string; round?: number }> = [
+    ...Array.from({ length: rounds }, (_, i) => ({
+      id: `round${i + 1}`,
+      label: i === 0 ? t("stage_round1") : `${t("stage_round2").replace("2", String(i + 1))}`,
+      round: i + 1,
+    })),
+    { id: "moderation", label: t("stage_moderation") },
+  ];
   return (
     <section className="panel p-4" aria-live="polite">
       <div className="mb-3 flex items-center gap-2">
@@ -35,16 +38,14 @@ export default function ProgressPanel({ stages, agents, participants, done }: Pr
         <span className="mono-label">{done ? t("result_title") : t("running")}</span>
       </div>
       <div className="space-y-3">
-        {STAGES.map((s, idx) => {
+        {stagesList.map((s) => {
           const state = stages[s.id];
           const isActive = state?.status === "active";
           const isDone = state?.status === "done";
           const roundAgents =
-            s.id === "moderation"
+            s.round === undefined
               ? []
-              : (idx === 0 ? [1] : [2]).flatMap((r) =>
-                  participants.map((p) => ({ r, p, state: agents[`${r}:${p.key}`] })),
-                );
+              : participants.map((p) => ({ p, state: agents[`${s.round}:${p.key}`] }));
           return (
             <div key={s.id}>
               <div className="flex items-center gap-2">
@@ -56,16 +57,16 @@ export default function ProgressPanel({ stages, agents, participants, done }: Pr
                 <span
                   className={`text-xs ${isDone ? "text-good" : isActive ? "text-cyan" : "text-dim/60"}`}
                 >
-                  {t(s.key)}
-                  {s.id === "moderation" && state?.fallback ? " · ⚠" : ""}
+                  {s.label}
+                  {s.round === undefined && state?.fallback ? " · ⚠" : ""}
                 </span>
                 {isActive && !isDone && <span className="stage-line ml-2 w-16 rounded-full" />}
               </div>
               {roundAgents.length > 0 && (
                 <div className="ml-4 mt-1.5 flex flex-wrap gap-1.5">
-                  {roundAgents.map(({ r, p, state }) => (
+                  {roundAgents.map(({ p, state }) => (
                     <span
-                      key={`${r}:${p.key}`}
+                      key={`${s.round}:${p.key}`}
                       title={state?.error ?? p.display_name}
                       className={`rounded-md border px-2 py-0.5 font-mono text-[0.68rem] ${
                         !state

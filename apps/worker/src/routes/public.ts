@@ -55,7 +55,7 @@ publicRoutes.post("/api/consensus", async (c) => {
   if (!parsed.success) {
     return jsonError(c, 400, "invalid_request", parsed.error.issues[0]?.message ?? "invalid");
   }
-  const { question, selected_agents } = parsed.data;
+  const { question, selected_agents, rounds } = parsed.data;
 
   // Resolve agents.
   const rows = await listAgents(c.env.DB, true);
@@ -78,6 +78,7 @@ publicRoutes.post("/api/consensus", async (c) => {
   // Cache check before any expensive work — a hit costs no LLM calls.
   const key = await cacheKey(
     question,
+    rounds,
     selectedRows.map((r) => `${r!.key}|${r!.url}|${r!.model}|${r!.display_name}`),
     `${moderatorRow.key}|${moderatorRow.url}|${moderatorRow.model}|${moderatorRow.display_name}`,
   );
@@ -150,6 +151,7 @@ publicRoutes.post("/api/consensus", async (c) => {
           question,
           participants: participants as NonNullable<(typeof participants)[number]>[],
           moderator,
+          rounds,
           emit,
           fetcher,
           signal: abort.signal,

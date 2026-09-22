@@ -373,7 +373,7 @@ describe("public endpoints", () => {
     expect(JSON.stringify(body)).not.toContain("gsk_test");
   });
 
-  it("validation: short question rejected, wrong agent count rejected", async () => {
+  it("validation: short question rejected, participant/round boundaries enforced", async () => {
     await setupAgents(env);
     const short = await app.request(
       "/api/consensus",
@@ -386,7 +386,35 @@ describe("public endpoints", () => {
     );
     expect(short.status).toBe(400);
 
-    const two = await app.request(
+    // Below the 2-participant floor and above the 5 ceiling are both rejected.
+    const one = await app.request(
+      "/api/consensus",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: "Pregunta suficientemente larga aquí",
+          selected_agents: ["a"],
+        }),
+      },
+      env,
+    );
+    expect(one.status).toBe(400);
+    const six = await app.request(
+      "/api/consensus",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: "Pregunta suficientemente larga aquí",
+          selected_agents: ["a", "b", "c", "together", "x1", "x2"],
+        }),
+      },
+      env,
+    );
+    expect(six.status).toBe(400);
+    // Out-of-range rounds rejected.
+    const badRounds = await app.request(
       "/api/consensus",
       {
         method: "POST",
@@ -394,11 +422,12 @@ describe("public endpoints", () => {
         body: JSON.stringify({
           question: "Pregunta suficientemente larga aquí",
           selected_agents: ["a", "b"],
+          rounds: 4,
         }),
       },
       env,
     );
-    expect(two.status).toBe(400);
+    expect(badRounds.status).toBe(400);
   });
 
   it("consensus SSE happy path with cache hit on second identical call", async () => {
@@ -793,5 +822,172 @@ describe("regression: second-audit fixes", () => {
       last = r.status;
     }
     expect(last).toBe(429);
+  });
+});
+
+describe("regression: topology 2-5, rounds 2-3, agent capability flags", () => {
+  function payloadFetcher(captured: Array<Record<string, unknown>>): typeof fetch {
+    return (async (input: Request | string, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+      captured.push(body);
+      if (String(body.model) === "mod") {
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: "Síntesis moderada final." } }] }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { content: expertJson(String(body.model), 80) } }] }),
+        { status: 200 },
+      );
+    }) as typeof fetch;
+  }
+
+  async function seedFiveParticipants(cookie: string): Promise<string[]> {
+    for (const key of ["p4", "p5"]) {
+      const r = await app.request(
+        "/api/admin/agents",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", cookie },
+          body: JSON.stringify({
+            key,
+            name: `Agent_${key.toUpperCase()}`,
+            display_name: key.toUpperCase(),
+            url: "https://mock.local/v1/chat/completions",
+            model: key,
+            api_key: `key-${key}-12345`,
+            timeout_s: 10,
+            role: "participant",
+          }),
+        },
+        env,
+      );
+      expect(r.status).toBe(200);
+    }
+    return ["a", "b", "c", "p4", "p5"];
+  }
+
+  it("runs a 2-participant consensus", async () => {
+    await setupAgents(env);
+    const res = await app.request(
+      "/api/consensus",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          question: "Consenso de solo dos participantes",
+          selected_agents: ["a", "b"],
+        }),
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const events = await readSse(res);
+    expect(events.filter((e) => e.type === "agent")).toHaveLength(4); // 2 × 2 rondas
+    const final = events.find((e) => e.type === "final") as { result: ConsensusResult };
+    expect(final.result.metrics.agents_total).toBe(2);
+    expect(final.result.metrics.agents_ok).toBe(2);
+  });
+
+  it("runs a 5-participant, 3-round consensus (15 agent events)", async () => {
+    // setupAgents bootstraps + creates the moderator and a/b/c.
+    const cookie = await setupAgents(env);
+    await seedFiveParticipants(cookie);
+    const five = ["a", "b", "c", "p4", "p5"];
+    const captured: Array<Record<string, unknown>> = [];
+    const previousFetcher = env.LLM_FETCHER;
+    env.LLM_FETCHER = payloadFetcher(captured);
+    try {
+      const res = await app.request(
+        "/api/consensus",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            question: "Panel grande de cinco expertas",
+            selected_agents: five,
+            rounds: 3,
+          }),
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const events = await readSse(res);
+      expect(events.filter((e) => e.type === "agent")).toHaveLength(15); // 5 × 3
+      const final = events.find((e) => e.type === "final") as { result: ConsensusResult };
+      expect(final.result.metrics.agents_total).toBe(5);
+      expect(final.result.participants.every((p) => p.rounds.length === 3)).toBe(true);
+    } finally {
+      env.LLM_FETCHER = previousFetcher;
+    }
+  });
+
+  it("agent capability flags reach the provider payload and admin list", async () => {
+    const boot = await app.request(
+      "/api/admin/bootstrap",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: "admin", password: "long-password-123" }),
+      },
+      env,
+    );
+    const cookie = cookieOf(boot);
+    const created = await app.request(
+      "/api/admin/agents",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie },
+        body: JSON.stringify({
+          key: "oai",
+          name: "Agent_OpenAI",
+          display_name: "OpenAI",
+          url: "https://mock.local/v1/chat/completions",
+          model: "oai-model",
+          api_key: "key-openai-123",
+          timeout_s: 10,
+          role: "participant",
+          structured_outputs: true,
+          use_max_completion_tokens: true,
+        }),
+      },
+      env,
+    );
+    expect(created.status).toBe(200);
+
+    const captured: Array<Record<string, unknown>> = [];
+    const previousFetcher = env.LLM_FETCHER;
+    env.LLM_FETCHER = payloadFetcher(captured);
+    try {
+      const res = await app.request(
+        "/api/individual",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ question: "¿Qué es el razonamiento encadenado?", agent: "oai" }),
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const body = captured[0] as Record<string, unknown>;
+      expect(body.response_format).toEqual({ type: "json_object" });
+      expect(body.max_completion_tokens).toBeDefined();
+      expect(body.max_tokens).toBeUndefined();
+    } finally {
+      env.LLM_FETCHER = previousFetcher;
+    }
+
+    const list = await app.request("/api/admin/agents", { headers: { cookie } }, env);
+    const agents = (await list.json()) as {
+      agents: Array<{
+        key: string;
+        structured_outputs: boolean;
+        use_max_completion_tokens: boolean;
+      }>;
+    };
+    const oai = agents.agents.find((a) => a.key === "oai");
+    expect(oai?.structured_outputs).toBe(true);
+    expect(oai?.use_max_completion_tokens).toBe(true);
   });
 });

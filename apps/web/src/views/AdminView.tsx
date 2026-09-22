@@ -394,6 +394,8 @@ function AgentForm({
     timeout_s: initial?.timeout_s ?? 45,
     role: initial?.role ?? "participant",
     active: initial?.active ?? true,
+    structured_outputs: initial?.structured_outputs ?? false,
+    use_max_completion_tokens: initial?.use_max_completion_tokens ?? false,
   });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -414,6 +416,8 @@ function AgentForm({
         timeout_s: form.timeout_s,
         role: form.role,
         active: form.active,
+        structured_outputs: form.structured_outputs,
+        use_max_completion_tokens: form.use_max_completion_tokens,
       };
       if (initial) {
         await updateAgent(initial.key, payload);
@@ -492,6 +496,24 @@ function AgentForm({
             className={inputCls}
           />
         </Field>
+        <label className="flex items-center gap-2 self-end pb-1 text-sm text-dim">
+          <input
+            type="checkbox"
+            checked={form.structured_outputs}
+            onChange={(e) => set("structured_outputs", e.target.checked)}
+            className="h-4 w-4 accent-cyan"
+          />
+          {t("structured_outputs")}
+        </label>
+        <label className="flex items-center gap-2 self-end pb-1 text-sm text-dim">
+          <input
+            type="checkbox"
+            checked={form.use_max_completion_tokens}
+            onChange={(e) => set("use_max_completion_tokens", e.target.checked)}
+            className="h-4 w-4 accent-cyan"
+          />
+          {t("max_completion")}
+        </label>
         <Field label="name (interno)">
           {/* Required on create: the server needs an internal name for prompts. */}
           <input

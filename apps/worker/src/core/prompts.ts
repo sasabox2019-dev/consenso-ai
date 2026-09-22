@@ -35,13 +35,15 @@ const ROUND1_SUFFIX = `
 RONDA 1 (respuesta independiente):
 Responde como si fueras la única IA consultada. No hagas referencias a otras respuestas. Ofrece tu mejor solución completa desde tu perspectiva especializada.`;
 
-const ROUND2_SUFFIX = `
+function revisionSuffix(round: number): string {
+  return `
 
-RONDA 2 (revisión tras conocer respuestas ajenas):
+RONDA ${round} (revisión tras conocer respuestas ajenas):
 - Lee críticamente las demás respuestas.
 - Integra lo mejor de cada una, corrige errores y resuelve contradicciones.
 - Explica brevemente qué mejoras introduces y por qué (máx. 3-5 bullets al inicio de tu answer).
 - Entrega una versión final más sólida y coherente, manteniendo la extensión mínima.`;
+}
 
 const INDIVIDUAL_SYSTEM = `Eres una IA experta en modo consulta individual. Esta es una consulta DIRECTA de un usuario y tu respuesta será la ÚNICA que verá.
 
@@ -63,7 +65,7 @@ FORMATO DE RESPUESTA JSON OBLIGATORIO:
 
 CRÍTICO: devuelve SOLO el JSON válido, cerrando correctamente todas las comillas y llaves.`;
 
-const MODERATOR_PROMPT = `Eres la moderadora de un panel de 3 IAs expertas. Lees sus respuestas de la Ronda 2 (versión revisada tras verse entre sí) y produces UNA respuesta final SUPERIOR: coherente, precisa, completa y accionable.
+const MODERATOR_PROMPT = `Eres la moderadora de un panel de IAs expertas. Lees sus respuestas de la última ronda (versión revisada tras verse entre sí) y produces UNA respuesta final SUPERIOR: coherente, precisa, completa y accionable.
 
 PROCESO:
 1. Evaluación: identifica convergencias, divergencias y lagunas. Detecta errores u omisiones y corrígelos.
@@ -77,24 +79,26 @@ RESTRICCIONES:
 
 FORMATO: texto plano bien estructurado en Markdown (NO JSON).`;
 
-export function buildConsensusSystemPrompt(agentName: string, round: 1 | 2): string {
+export function buildConsensusSystemPrompt(agentName: string, round: number): string {
   const base = EXPERT_SYSTEM.replaceAll("__NAME__", agentName);
-  return round === 1 ? base + ROUND1_SUFFIX : base + ROUND2_SUFFIX;
+  return round === 1 ? base + ROUND1_SUFFIX : base + revisionSuffix(round);
 }
 
 export function buildIndividualSystemPrompt(agentName: string): string {
   return INDIVIDUAL_SYSTEM.replaceAll("__NAME__", agentName);
 }
 
-export function buildRound2UserPrompt(
+/** User prompt for any revision round (2..N): shows the previous round's answers. */
+export function buildRevisionUserPrompt(
   question: string,
-  round1: Array<{ name: string; answer: string }>,
+  previousRound: number,
+  answers: Array<{ name: string; answer: string }>,
 ): string {
   let ctx = "";
-  for (const r of round1) {
+  for (const r of answers) {
     ctx += `\n### ${r.name}\n${r.answer.slice(0, 600)}${r.answer.length > 600 ? "…" : ""}\n`;
   }
-  return `Pregunta: ${question}\n\nRespuestas de otros expertos en la Ronda 1 (resumidas):${ctx}`;
+  return `Pregunta: ${question}\n\nRespuestas de otros expertos en la Ronda ${previousRound} (resumidas):${ctx}`;
 }
 
 export function buildModeratorUserPrompt(
@@ -110,7 +114,7 @@ export function buildModeratorUserPrompt(
     }
     ctx += "\n";
   }
-  return `PREGUNTA DEL USUARIO: ${question}\n\nRESPUESTAS DE RONDA 2 DEL PANEL:\n${ctx}\nGenera ahora la respuesta final consensuada:`;
+  return `PREGUNTA DEL USUARIO: ${question}\n\nRESPUESTAS DE LA ÚLTIMA RONDA DEL PANEL:\n${ctx}\nGenera ahora la respuesta final consensuada:`;
 }
 
 /** Tiny prompt used by the admin "test connection" feature. */

@@ -46,6 +46,8 @@ export async function toRuntimeAgent(
       model: row.model,
       api_key,
       timeout_s: row.timeout_s,
+      structured_outputs: Boolean(row.structured_outputs),
+      use_max_completion_tokens: Boolean(row.use_max_completion_tokens),
     };
   } catch {
     return null; // Key not decryptable with the current MASTER_KEY.

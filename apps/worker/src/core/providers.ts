@@ -32,6 +32,10 @@ export interface LLMCallArgs {
   maxTokens?: number;
   timeoutS: number;
   retries?: number;
+  /** Ask the provider for JSON mode via response_format (per-agent capability). */
+  structuredOutputs?: boolean;
+  /** OpenAI reasoning models require max_completion_tokens instead of max_tokens. */
+  useMaxCompletionTokens?: boolean;
   /** Test hook: overrides backoff delays (ms) between retries. */
   retryDelaysMs?: number[];
   /** External abort (e.g. client disconnected) — combined with the per-call timeout. */
@@ -102,12 +106,22 @@ export function normalizeContent(data: unknown): string | null {
 export async function callChatCompletion(args: LLMCallArgs): Promise<LLMCallResult> {
   const doFetch = args.fetcher ?? fetch;
   const retries = args.retries ?? LIMITS.LLM_RETRIES;
-  const payload = {
+  // Parameter name is per-agent: OpenAI reasoning models reject max_tokens,
+  // Mistral & co. reject max_completion_tokens — the caller decides.
+  const tokenCap = args.maxTokens ?? LIMITS.LLM_MAX_TOKENS;
+  const payload: Record<string, unknown> = {
     model: args.model,
     messages: args.messages,
     temperature: args.temperature,
-    max_tokens: args.maxTokens ?? LIMITS.LLM_MAX_TOKENS,
+    ...(args.useMaxCompletionTokens
+      ? { max_completion_tokens: tokenCap }
+      : { max_tokens: tokenCap }),
   };
+  if (args.structuredOutputs) {
+    // Broadly-supported JSON mode. Our prompts already demand JSON, which
+    // json_object-mode providers (DeepSeek et al.) additionally require.
+    payload.response_format = { type: "json_object" };
+  }
   const headers = {
     authorization: `Bearer ${args.apiKey}`,
     "content-type": "application/json",

@@ -11,6 +11,8 @@ function makeAgent(key: string, model: string): AgentRuntime {
     model,
     api_key: "sk-mock",
     timeout_s: 5,
+    structured_outputs: false,
+    use_max_completion_tokens: false,
   };
 }
 
@@ -81,6 +83,8 @@ describe("runConsensus", () => {
       question: "¿Qué estrategia seguir para aprender IA?",
       participants,
       moderator,
+
+      rounds: 2,
       emit,
       fetcher: mockFetcher(),
     });
@@ -118,6 +122,8 @@ describe("runConsensus", () => {
       question: "Pregunta suficientemente larga para el test",
       participants: mixed,
       moderator,
+
+      rounds: 2,
       emit,
       fetcher: mockFetcher(),
     });
@@ -139,6 +145,8 @@ describe("runConsensus", () => {
       question: "Pregunta sobre síntesis de respuestas IA",
       participants,
       moderator,
+
+      rounds: 2,
       emit,
       fetcher: mockFetcher({ moderatorFails: true }),
     });
@@ -156,6 +164,8 @@ describe("runConsensus", () => {
         question: "Pregunta que nadie podrá responder aquí",
         participants: allFail,
         moderator,
+
+        rounds: 2,
         emit,
         fetcher: mockFetcher(),
       }),
@@ -165,6 +175,8 @@ describe("runConsensus", () => {
         question: "Pregunta que nadie podrá responder aquí",
         participants: allFail,
         moderator,
+
+        rounds: 2,
         emit,
         fetcher: mockFetcher(),
       }),
@@ -188,6 +200,8 @@ describe("runConsensus", () => {
       question: "Pregunta con contexto entre rondas",
       participants,
       moderator,
+
+      rounds: 2,
       emit: () => {},
       fetcher,
     });
@@ -229,6 +243,8 @@ describe("regression: audit engine fixes", () => {
         question: "Pregunta con mayoría fallida en ronda 1",
         participants: mixed,
         moderator,
+
+        rounds: 2,
         emit: (e) => events.push(e),
         fetcher,
       }),
@@ -260,6 +276,8 @@ describe("regression: audit engine fixes", () => {
         question: "Pregunta cancelada por el usuario",
         participants,
         moderator,
+
+        rounds: 2,
         emit: () => {},
         fetcher,
         signal: controller.signal,

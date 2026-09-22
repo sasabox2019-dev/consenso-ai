@@ -15,6 +15,8 @@ export interface AgentRow {
   timeout_s: number;
   role: AgentRole;
   active: number;
+  structured_outputs: number;
+  use_max_completion_tokens: number;
 }
 
 export interface AdminRow {
@@ -34,8 +36,8 @@ export interface AuditRow {
 
 export async function listAgents(db: D1Database, activeOnly = false): Promise<AgentRow[]> {
   const sql = activeOnly
-    ? "SELECT key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active FROM agents WHERE active = 1 ORDER BY role, key"
-    : "SELECT key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active FROM agents ORDER BY role, key";
+    ? "SELECT key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active, structured_outputs, use_max_completion_tokens FROM agents WHERE active = 1 ORDER BY role, key"
+    : "SELECT key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active, structured_outputs, use_max_completion_tokens FROM agents ORDER BY role, key";
   const res = await db.prepare(sql).all<AgentRow>();
   return res.results ?? [];
 }
@@ -43,7 +45,7 @@ export async function listAgents(db: D1Database, activeOnly = false): Promise<Ag
 export async function getAgent(db: D1Database, key: string): Promise<AgentRow | null> {
   return db
     .prepare(
-      "SELECT key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active FROM agents WHERE key = ?",
+      "SELECT key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active, structured_outputs, use_max_completion_tokens FROM agents WHERE key = ?",
     )
     .bind(key)
     .first<AgentRow>();
@@ -72,12 +74,14 @@ export async function createAgent(
     api_key_ciphertext: string | null;
     timeout_s: number;
     role: AgentRole;
+    structured_outputs: boolean;
+    use_max_completion_tokens: boolean;
   },
 ): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO agents (key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+      `INSERT INTO agents (key, name, display_name, url, model, api_key_ciphertext, timeout_s, role, active, structured_outputs, use_max_completion_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
     )
     .bind(
       agent.key,
@@ -88,6 +92,8 @@ export async function createAgent(
       agent.api_key_ciphertext,
       agent.timeout_s,
       agent.role,
+      agent.structured_outputs ? 1 : 0,
+      agent.use_max_completion_tokens ? 1 : 0,
     )
     .run();
 }

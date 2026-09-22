@@ -29,6 +29,7 @@ export default function HomeView() {
   } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
+  const [rounds, setRounds] = useState(2);
   const [individualAgent, setIndividualAgent] = useState<string>("");
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
@@ -46,6 +47,7 @@ export default function HomeView() {
       .then((p) => {
         setAgentsPayload(p);
         setSelected(p.participants.slice(0, 3).map((a) => a.key));
+        setRounds(2);
         // Preselect only agents that can actually run (have a key configured).
         setIndividualAgent(p.participants.find((a) => a.has_api_key)?.key ?? "");
       })
@@ -90,7 +92,7 @@ export default function HomeView() {
           next.stages[e.stage] = { status: "active" };
           break;
         case "round":
-          next.stages[e.round === 1 ? "round1" : "round2"] = {
+          next.stages[`round${e.round}`] = {
             status: e.status === "start" ? "active" : "done",
           };
           break;
@@ -122,8 +124,8 @@ export default function HomeView() {
   }, []);
 
   const startConsensus = async () => {
-    if (selected.length !== 3) {
-      setRun({ ...emptyRun(), error: { code: "selection", message: t("select_three_error") } });
+    if (selected.length < 2 || selected.length > 5) {
+      setRun({ ...emptyRun(), error: { code: "selection", message: t("select_range_error") } });
       return;
     }
     if (question.trim().length < 10) {
@@ -136,7 +138,7 @@ export default function HomeView() {
     abortRef.current = controller;
     try {
       await streamConsensus(
-        { question: question.trim(), selected_agents: selected },
+        { question: question.trim(), selected_agents: selected, rounds },
         handleEvent,
         controller.signal,
       );
@@ -226,7 +228,7 @@ export default function HomeView() {
         <section className="panel p-4">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold text-ink">{t("agents_title")}</h2>
-            <span className="mono-label">{selected.length}/3</span>
+            <span className="mono-label">{selected.length}/5 · mín 2</span>
           </div>
           {loadError && <p className="text-sm text-bad">{loadError}</p>}
           <div className="flex flex-wrap gap-2">
@@ -258,9 +260,29 @@ export default function HomeView() {
               <span>· {t("moderator_label")}</span>
             </div>
           )}
-          {sortedParticipants.length < 3 && !loadError && (
+          {sortedParticipants.length < 2 && !loadError && (
             <p className="mt-2 text-sm text-warn">{t("agents_need")}</p>
           )}
+          <div className="mt-4 flex items-center gap-3">
+            <span className="mono-label">{t("rounds_label")}</span>
+            <div className="flex gap-1.5">
+              {[2, 3].map((r) => (
+                <button
+                  type="button"
+                  key={r}
+                  onClick={() => setRounds(r)}
+                  aria-pressed={rounds === r}
+                  className={`rounded-lg border px-3 py-1 font-mono text-xs transition ${
+                    rounds === r
+                      ? "border-cyan/60 bg-cyan/10 text-cyan"
+                      : "border-edge text-dim hover:border-dim"
+                  }`}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+          </div>
           {!moderator && !loadError && (
             <p className="mt-2 text-sm text-warn">{t("no_moderator")}</p>
           )}
@@ -349,6 +371,7 @@ export default function HomeView() {
             agents={run.agents}
             participants={sortedParticipants.filter((a) => selected.includes(a.key))}
             done={Boolean(result)}
+            rounds={rounds}
           />
           {stopped && !result && (
             <p className="mono-label text-center text-dim">{t("stopped_msg")}</p>

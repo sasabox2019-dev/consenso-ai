@@ -263,6 +263,8 @@ adminRoutes.get("/api/admin/agents", async (c) => {
       url: r.url,
       timeout_s: r.timeout_s,
       active: Boolean(r.active),
+      structured_outputs: Boolean(r.structured_outputs),
+      use_max_completion_tokens: Boolean(r.use_max_completion_tokens),
     })),
   });
 });
@@ -310,6 +312,8 @@ adminRoutes.post("/api/admin/agents", async (c) => {
     api_key_ciphertext: ciphertext,
     timeout_s: input.timeout_s,
     role: input.role as AgentRole,
+    structured_outputs: input.structured_outputs,
+    use_max_completion_tokens: input.use_max_completion_tokens,
   });
   await audit(
     c.env.DB,
@@ -353,6 +357,10 @@ adminRoutes.put("/api/admin/agents/:key", async (c) => {
   if (input.timeout_s !== undefined) fields.timeout_s = input.timeout_s;
   if (input.role !== undefined) fields.role = input.role;
   if (input.active !== undefined) fields.active = input.active ? 1 : 0;
+  if (input.structured_outputs !== undefined)
+    fields.structured_outputs = input.structured_outputs ? 1 : 0;
+  if (input.use_max_completion_tokens !== undefined)
+    fields.use_max_completion_tokens = input.use_max_completion_tokens ? 1 : 0;
   if (input.api_key !== undefined) {
     if (!c.env.MASTER_KEY) {
       return jsonError(c, 503, "not_configured", "Falta MASTER_KEY para cifrar la API key.");

@@ -1,5 +1,5 @@
 /**
- * The consensus engine: 3 participants × 2 rounds + 1 moderator synthesis.
+ * The consensus engine: 2-5 participants × 2-3 rounds + 1 moderator synthesis.
  *
  * Identity is server-authoritative: display names and keys come from config,
  * the LLM's self-reported "agent_id" is ignored entirely (this is what caused
@@ -23,7 +23,7 @@ import {
   buildConsensusSystemPrompt,
   buildIndividualSystemPrompt,
   buildModeratorUserPrompt,
-  buildRound2UserPrompt,
+  buildRevisionUserPrompt,
 } from "./prompts";
 import { type ChatMessage, callChatCompletion } from "./providers";
 
@@ -35,6 +35,8 @@ export interface AgentRuntime {
   model: string;
   api_key: string;
   timeout_s: number;
+  structured_outputs: boolean;
+  use_max_completion_tokens: boolean;
 }
 
 export class ConsensusError extends Error {
@@ -53,16 +55,16 @@ interface RoundOutcome {
 async function callParticipant(
   agent: AgentRuntime,
   question: string,
-  round: 1 | 2,
-  round1Context: Array<{ name: string; answer: string }> | null,
+  round: number,
+  previousContext: Array<{ name: string; answer: string }> | null,
   fetcher?: typeof fetch,
   signal?: AbortSignal,
 ): Promise<RoundOutcome> {
   const system = buildConsensusSystemPrompt(agent.name, round);
   const user =
-    round === 1 || round1Context === null
+    round === 1 || previousContext === null
       ? `Pregunta: ${question}`
-      : buildRound2UserPrompt(question, round1Context);
+      : buildRevisionUserPrompt(question, round - 1, previousContext);
 
   const messages: ChatMessage[] = [
     { role: "system", content: system },
@@ -76,6 +78,8 @@ async function callParticipant(
     messages,
     temperature: 0.8,
     timeoutS: agent.timeout_s,
+    structuredOutputs: agent.structured_outputs,
+    useMaxCompletionTokens: agent.use_max_completion_tokens,
     fetcher,
     signal,
   });
@@ -122,6 +126,8 @@ async function callModerator(
     messages: [{ role: "user", content: buildModeratorUserPrompt(question, answers) }],
     temperature: 0.65,
     timeoutS: moderator.timeout_s,
+    structuredOutputs: false, // moderator writes prose Markdown, not JSON
+    useMaxCompletionTokens: moderator.use_max_completion_tokens,
     fetcher,
     signal,
   });
@@ -166,7 +172,10 @@ function fallbackSynthesis(
 
 function agreementLevel(answers: RoundAnswer[]): "HIGH" | "MODERATE" | "LOW" {
   const agreeCount = answers.reduce((s, a) => s + a.agree_with.length, 0);
-  if (agreeCount >= 4) return "HIGH";
+  // Scales with panel size: HIGH ≈ nearly everyone agrees with someone
+  // (2N-2 preserves the original N=3 threshold of 4), MODERATE = some overlap.
+  const highBar = Math.max(2, 2 * answers.length - 2);
+  if (agreeCount >= highBar) return "HIGH";
   if (agreeCount >= 2) return "MODERATE";
   return "LOW";
 }
@@ -175,6 +184,8 @@ export interface RunConsensusArgs {
   question: string;
   participants: AgentRuntime[];
   moderator: AgentRuntime;
+  /** Revision rounds after the independent one (total rounds = 1 + this is NOT used; this IS the total). */
+  rounds: number;
   emit: (event: StreamEvent) => void;
   fetcher?: typeof fetch;
   /** Aborted when the client disconnects — in-flight LLM calls cancel immediately. */
@@ -182,71 +193,65 @@ export interface RunConsensusArgs {
 }
 
 export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusResult> {
-  const { question, participants, moderator, emit, fetcher, signal } = args;
+  const { question, participants, moderator, rounds, emit, fetcher, signal } = args;
   const started = Date.now();
 
-  emit({ type: "round", round: 1, status: "start" });
-  const round1 = await Promise.all(
-    participants.map(async (p) => {
-      const outcome = await callParticipant(p, question, 1, null, fetcher, signal);
-      emit({
-        type: "agent",
-        round: 1,
-        agent_key: p.key,
-        display_name: p.display_name,
-        status: outcome.slot.status === "ok" ? "ok" : "error",
-        confidence: outcome.slot.status === "ok" ? outcome.slot.data.confidence : undefined,
-        duration_ms: outcome.elapsed_ms,
-        error: outcome.slot.status === "error" ? outcome.slot.error : undefined,
-      });
-      return { agent: p, outcome };
-    }),
-  );
-  emit({ type: "round", round: 1, status: "end" });
+  const roundOutcomes: Array<Array<{ agent: AgentRuntime; outcome: RoundOutcome }>> = [];
+  let previousContext: Array<{ name: string; answer: string }> | null = null;
 
-  const r1Ok = round1.filter((r) => r.outcome.slot.status === "ok");
-  const r1Context = r1Ok.map((r) => ({
-    name: r.agent.display_name,
-    answer: r.outcome.slot.status === "ok" ? r.outcome.slot.data.answer : "",
-  }));
-
-  // Don't pay for round 2 if fewer than two participants survived round 1.
-  if (r1Ok.length < 2) {
-    throw new ConsensusError(
-      "not_enough_participants",
-      "Menos de 2 participantes respondieron; no se puede formar consenso.",
+  for (let round = 1; round <= rounds; round++) {
+    emit({ type: "round", round, status: "start" });
+    const outcomes = await Promise.all(
+      participants.map(async (p) => {
+        const outcome = await callParticipant(
+          p,
+          question,
+          round,
+          round === 1 ? null : previousContext,
+          fetcher,
+          signal,
+        );
+        emit({
+          type: "agent",
+          round,
+          agent_key: p.key,
+          display_name: p.display_name,
+          status: outcome.slot.status === "ok" ? "ok" : "error",
+          confidence: outcome.slot.status === "ok" ? outcome.slot.data.confidence : undefined,
+          duration_ms: outcome.elapsed_ms,
+          error: outcome.slot.status === "error" ? outcome.slot.error : undefined,
+        });
+        return { agent: p, outcome };
+      }),
     );
+    emit({ type: "round", round, status: "end" });
+    roundOutcomes.push(outcomes);
+
+    const roundOk = outcomes.filter((r) => r.outcome.slot.status === "ok");
+
+    // Don't pay for another round if fewer than two participants survived.
+    if (roundOk.length < 2) {
+      throw new ConsensusError(
+        "not_enough_participants",
+        "Menos de 2 participantes respondieron; no se puede formar consenso.",
+      );
+    }
+    previousContext = roundOk.map((r) => ({
+      name: r.agent.display_name,
+      answer: r.outcome.slot.status === "ok" ? r.outcome.slot.data.answer : "",
+    }));
   }
 
-  emit({ type: "round", round: 2, status: "start" });
-  const round2 = await Promise.all(
-    participants.map(async (p) => {
-      const outcome = await callParticipant(p, question, 2, r1Context, fetcher, signal);
-      emit({
-        type: "agent",
-        round: 2,
-        agent_key: p.key,
-        display_name: p.display_name,
-        status: outcome.slot.status === "ok" ? "ok" : "error",
-        confidence: outcome.slot.status === "ok" ? outcome.slot.data.confidence : undefined,
-        duration_ms: outcome.elapsed_ms,
-        error: outcome.slot.status === "error" ? outcome.slot.error : undefined,
-      });
-      return { agent: p, outcome };
-    }),
-  );
-  emit({ type: "round", round: 2, status: "end" });
-
-  // Latest-good answer per participant (round 2 preferred, round 1 as backup).
+  // Latest-good answer per participant (last round preferred, earlier as backup).
   const latestOk = participants.map((p) => {
-    const r1 = round1.find((r) => r.agent.key === p.key);
-    const r2 = round2.find((r) => r.agent.key === p.key);
-    const slot: RoundSlot | undefined =
-      r2?.outcome.slot.status === "ok"
-        ? r2.outcome.slot
-        : r1?.outcome.slot.status === "ok"
-          ? r1.outcome.slot
-          : undefined;
+    let slot: RoundSlot | undefined;
+    for (let i = roundOutcomes.length - 1; i >= 0; i--) {
+      const entry = roundOutcomes[i]?.find((r) => r.agent.key === p.key);
+      if (entry?.outcome.slot.status === "ok") {
+        slot = entry.outcome.slot;
+        break;
+      }
+    }
     return { agent: p, slot };
   });
 
@@ -297,12 +302,10 @@ export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusRes
   });
 
   const participantResults: ParticipantResult[] = participants.map((p) => {
-    const r1 = round1.find((r) => r.agent.key === p.key);
-    const r2 = round2.find((r) => r.agent.key === p.key);
-    const slots: [RoundSlot, RoundSlot] = [
-      r1?.outcome.slot ?? { status: "error", error: "no ejecutado" },
-      r2?.outcome.slot ?? { status: "error", error: "no ejecutado" },
-    ];
+    const slots: RoundSlot[] = roundOutcomes.map((ro) => {
+      const entry = ro.find((r) => r.agent.key === p.key);
+      return entry?.outcome.slot ?? { status: "error", error: "no ejecutado" };
+    });
     const errOf = (s: RoundSlot | undefined): string | null =>
       s && s.status === "error" ? s.error : null;
     const unavailable = slots.every((s) => s.status === "error");
@@ -311,7 +314,7 @@ export async function runConsensus(args: RunConsensusArgs): Promise<ConsensusRes
       display_name: p.display_name,
       rounds: slots,
       unavailable,
-      error: unavailable ? (errOf(slots[1]) ?? errOf(slots[0])) : null,
+      error: unavailable ? (errOf(slots[slots.length - 1]) ?? errOf(slots[0])) : null,
     };
   });
 
@@ -367,6 +370,8 @@ export async function runIndividual(args: {
     ],
     temperature: 0.85,
     timeoutS: args.agent.timeout_s,
+    structuredOutputs: args.agent.structured_outputs,
+    useMaxCompletionTokens: args.agent.use_max_completion_tokens,
     fetcher: args.fetcher,
     signal: args.signal,
   });
