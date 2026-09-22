@@ -53,8 +53,7 @@ if (!masterKey || !jwtSecret) {
 // Database: apply migrations, optionally seed demo agents
 // ---------------------------------------------------------------------------
 
-const dataDir =
-  process.env.DEV_DB_DIR ?? process.env.DATA_DIR ?? join(workerRoot, ".dev");
+const dataDir = process.env.DEV_DB_DIR ?? process.env.DATA_DIR ?? join(workerRoot, ".dev");
 const dbFile = join(dataDir, "consenso.sqlite");
 mkdirSync(dirname(dbFile), { recursive: true });
 const db = new NodeSqliteD1(dbFile);
@@ -138,13 +137,20 @@ const env = {
   TRUST_PROXY_IP: process.env.TRUST_PROXY_IP,
 };
 
-const server = serve({ fetch: (req) => app.fetch(req, env as never), port, hostname: host }, (info) => {
-  console.log(`🚀 Consenso AI v2 (node) → http://${host === "0.0.0.0" ? "<todas-las-interfaces>" : host}:${info.port}`);
-  console.log(`   Datos: ${dbFile}`);
-  if (host === "0.0.0.0") {
-    console.log("   ⚠️  Expuesto a la red — ponlo detrás de un proxy con TLS y usa TRUST_PROXY_IP=1.");
-  }
-});
+const server = serve(
+  { fetch: (req) => app.fetch(req, env as never), port, hostname: host },
+  (info) => {
+    console.log(
+      `🚀 Consenso AI v2 (node) → http://${host === "0.0.0.0" ? "<todas-las-interfaces>" : host}:${info.port}`,
+    );
+    console.log(`   Datos: ${dbFile}`);
+    if (host === "0.0.0.0") {
+      console.log(
+        "   ⚠️  Expuesto a la red — ponlo detrás de un proxy con TLS y usa TRUST_PROXY_IP=1.",
+      );
+    }
+  },
+);
 
 server.addListener("error", (err: NodeJS.ErrnoException) => {
   if (err.code === "EADDRINUSE") {
