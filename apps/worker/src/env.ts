@@ -35,7 +35,6 @@ export interface Env {
   BOOTSTRAP_TOKEN?: string;
   /** Test/dev injection point for the upstream LLM transport. */
   LLM_FETCHER?: typeof fetch;
-  SEED_DEMO?: string;
 }
 
 export function clientIp(req: Request): string {

@@ -1,4 +1,4 @@
-/** System-wide tunables (used as defaults; some overridable via D1 settings). */
+/** System-wide tunables (compile-time constants; change and redeploy to adjust). */
 export const LIMITS = {
   /** Login attempts per window before lockout. */
   LOGIN_MAX_ATTEMPTS: 5,
